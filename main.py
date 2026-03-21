@@ -116,9 +116,8 @@ async def main() -> None:
     @dp.message(Command("start"))
     async def cmd_start(message: Message) -> None:
         await message.answer(
-            "Привет,добро пожаловать в PrimeAi бота.\n" 
+            "Добро пожаловать в PrimeAi бота.\n" 
             "Задай мне любой вопрос и получи мгновенный ответ.\n"
-            "Пиши любое сообщение, и я отвечу с учетом истории диалога.\n"
             "Команда /clear очищает историю."
         )
 
