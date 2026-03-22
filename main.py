@@ -315,48 +315,34 @@ async def main() -> None:
     
     # ==================== КОМАНДЫ ДЛЯ ВСЕХ ====================
     
-    @dp.message(Command("start"))
-    async def cmd_start(message: Message) -> None:
-        if message.from_user:
-            register_user(message.from_user.id)
-        await message.answer(
-            "🤖 *Добро пожаловать в PrimeAi бота!*\n\n"
-            "Задай мне любой вопрос — я отвечу с помощью ИИ.\n"
-            "Я помню историю нашего диалога, даже после перезапуска!\n\n"
-            "📌 *Команды:*\n"
-            "/clear — очистить историю диалога\n"
-            "/help — подробная справка\n"
-            "/whoami — твой Telegram ID",
-            parse_mode="Markdown"
-        )
-
     @dp.message(Command("help"))
-    async def cmd_help(message: Message) -> None:
-        if message.from_user:
-            register_user(message.from_user.id)
-        
-        help_text = (
-            "<b>🤖 Помощь — PrimeAi</b>\n\n"
-            "<b>💬 Чат с ИИ</b>\n"
-            "Просто напиши любое текстовое сообщение — я отвечу с помощью нейросети.\n"
-            "Я помню последние 20 сообщений нашего диалога.\n\n"
-            "<b>📋 Команды</b>\n"
-            "/start — приветствие\n"
-            "/help — эта справка\n"
-            "/clear — очистить историю диалога\n"
-            "/whoami — твой Telegram ID\n\n"
+async def cmd_help(message: Message) -> None:
+    if message.from_user:
+        register_user(message.from_user.id)
+    
+    help_text = (
+        "<b>🤖 Помощь — PrimeAi</b>\n\n"
+        "<b>💬 Чат с ИИ</b>\n"
+        "Просто напиши любое текстовое сообщение — я отвечу с помощью нейросети.\n"
+        "Я помню последние 20 сообщений нашего диалога.\n\n"
+        "<b>📋 Команды</b>\n"
+        "/start — приветствие\n"
+        "/help — эта справка\n"
+        "/clear — очистить историю диалога\n"
+        "/whoami — твой Telegram ID\n\n"
+    )
+    
+    # Если пользователь админ — добавляем админ-команды в справку
+    if is_admin(message.from_user.id if message.from_user else None):
+        help_text += (
+            "<b>👑 Админ-команды</b>\n"
+            "/stats — полная статистика бота\n"
+            "/admin_clear &lt;user_id&gt; — очистить историю пользователя\n"
+            "/admin — информация об админ-панели\n"
         )
+    
+    await message.answer(help_text, parse_mode="HTML")
         
-        # Если пользователь админ — добавляем админ-команды в справку
-        if is_admin(message.from_user.id if message.from_user else None):
-            help_text += (
-                "<b>👑 Админ-команды</b>\n"
-                "/stats — полная статистика бота\n"
-                "/admin_clear &lt;user_id&gt; — очистить историю пользователя\n"
-                "/admin — информация об админ-панели\n"
-            )
-        
-        await message.answer(help_text, parse_mode="HTML")
 
     @dp.message(Command("whoami"))
     async def cmd_whoami(message: Message) -> None:
