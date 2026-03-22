@@ -38,6 +38,11 @@ BUSY_TEXT = os.getenv(
     "BOT_BUSY_TEXT",
     "Подожди, сейчас обрабатываю твоё прошлое сообщение.",
 ).strip() or "Подожди, сейчас обрабатываю твоё прошлое сообщение."
+# Текст при сбое ИИ (без технических деталей — они только в логах)
+USER_ERROR_AI = os.getenv(
+    "BOT_USER_ERROR_TEXT",
+    "Не удалось получить ответ. Попробуй позже.",
+).strip() or "Не удалось получить ответ. Попробуй позже."
 
 MAX_HISTORY_MESSAGES = 20
 
@@ -127,20 +132,22 @@ async def ask_openrouter(
             payload["model"] = FALLBACK_OPENROUTER_MODEL
             async with session.post(endpoint, json=payload, headers=headers, timeout=60) as retry_resp:
                 if retry_resp.status != 200:
-                    error_text = await retry_resp.text()
+                    err_body = await retry_resp.text()
                     history.pop()
-                    raise RuntimeError(f"OpenRouter error {retry_resp.status}: {error_text}")
+                    logging.error(
+                        "LLM API error after fallback (status=%s): %s",
+                        retry_resp.status,
+                        err_body,
+                    )
+                    raise RuntimeError(USER_ERROR_AI)
                 data = await retry_resp.json()
         elif resp.status != 200:
             error_text = await resp.text()
             history.pop()
-            if resp.status == 402:
-                raise RuntimeError(
-                    "Недостаточно кредитов OpenRouter или слишком большой лимит ответа. "
-                    "Пополните баланс либо уменьшите OPENROUTER_MAX_TOKENS в .env "
-                    "(например, до 256-512)."
-                )
-            raise RuntimeError(f"OpenRouter error {resp.status}: {error_text}")
+            logging.warning(
+                "LLM API error (status=%s): %s", resp.status, error_text
+            )
+            raise RuntimeError(USER_ERROR_AI)
         else:
             data = await resp.json()
 
@@ -296,9 +303,9 @@ async def main() -> None:
                 )
                 reply = await ask_openrouter(session, user.id, message.text)
                 await message.answer(reply)
-            except Exception as exc:
+            except Exception:
                 logging.exception("Failed to handle message")
-                await message.answer(f"Ошибка при обращении к OpenRouter: {exc}")
+                await message.answer(USER_ERROR_AI)
             finally:
                 try:
                     await bot.delete_message(
