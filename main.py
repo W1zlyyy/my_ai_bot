@@ -36,6 +36,38 @@ USER_ERROR_AI = os.getenv("BOT_USER_ERROR_TEXT", "Не удалось получ
 MAX_HISTORY_MESSAGES = 20
 DB_PATH = "bot.db"
 
+# ==================== РЕЖИМЫ ОТВЕТА ====================
+
+MODES = {
+    "brief": {
+        "name": "📝 Краткий",
+        "emoji": "📝",
+        "system": "Отвечай максимально кратко, только суть. 1-2 предложения. Без лишних слов."
+    },
+    "balanced": {
+        "name": "⚖️ Сбалансированный",
+        "emoji": "⚖️",
+        "system": "Отвечай кратко и понятно, но с достаточными деталями. 2-4 предложения."
+    },
+    "detailed": {
+        "name": "📚 Подробный",
+        "emoji": "📚",
+        "system": "Отвечай подробно, объясняя все детали. Используй примеры, если уместно. 4-8 предложений."
+    },
+    "creative": {
+        "name": "🎨 Креативный",
+        "emoji": "🎨",
+        "system": "Отвечай творчески, используй метафоры, образные выражения и юмор. Будь вдохновляющим."
+    },
+    "technical": {
+        "name": "💻 Технический",
+        "emoji": "💻",
+        "system": "Отвечай технически точно, используй правильную терминологию. Будь конкретным и структурированным."
+    }
+}
+
+DEFAULT_MODE = "balanced"
+
 BOT_STARTED_AT = time.time()
 
 # ==================== АДМИНКА ====================
@@ -98,6 +130,16 @@ def init_db():
             CREATE TABLE IF NOT EXISTS stats (
                 key TEXT PRIMARY KEY,
                 value INTEGER NOT NULL
+            )
+        """)
+        
+        # Таблица настроек пользователей (для режимов и языков)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                mode TEXT DEFAULT 'balanced',
+                lang TEXT DEFAULT 'ru',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
@@ -176,9 +218,33 @@ def register_user(user_id: int) -> bool:
         
         if count == 0:
             # Новый пользователь
-            conn.execute("UPDATE stats SET value = value + 1 WHERE key = 'ai_requests'")
+            conn.execute("UPDATE stats SET value = value + 1 WHERE key = 'users_count'")
             return True
     return False
+
+def save_user_mode(user_id: int, mode: str):
+    """Сохранить режим пользователя в БД"""
+    try:
+        with get_db() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO user_settings (user_id, mode)
+                VALUES (?, ?)
+            """, (user_id, mode))
+    except Exception as e:
+        logging.error(f"Ошибка сохранения режима: {e}")
+
+def load_user_modes_from_db():
+    """Загрузить сохраненные режимы пользователей из БД"""
+    try:
+        with get_db() as conn:
+            cur = conn.execute("SELECT user_id, mode FROM user_settings")
+            rows = cur.fetchall()
+            for user_id, mode in rows:
+                if mode in MODES:
+                    user_mode[user_id] = mode
+            logging.info(f"Загружены настройки для {len(rows)} пользователей")
+    except Exception as e:
+        logging.error(f"Ошибка загрузки настроек: {e}")
 
 # ==================== КЭШ В ПАМЯТИ ====================
 
@@ -187,6 +253,9 @@ chat_history: Dict[int, Deque[Dict[str, str]]] = defaultdict(lambda: deque(maxle
 
 # Пользователи, у которых сейчас выполняется запрос к ИИ
 processing_user_ids: Set[int] = set()
+
+# Режим ответа для каждого пользователя
+user_mode: Dict[int, str] = defaultdict(lambda: DEFAULT_MODE)
 
 def load_all_histories_to_cache():
     """Загрузить всю историю из БД в кэш при старте бота"""
@@ -217,13 +286,18 @@ async def ask_openrouter(
     # Добавляем в кэш
     chat_history[user_id].append({"role": "user", "content": user_text})
     
-    # Формируем сообщения для API (используем кэш)
+    # Получаем режим пользователя
+    mode = user_mode.get(user_id, DEFAULT_MODE)
+    system_prompt = MODES[mode]["system"]
+    
+    # Формируем сообщения для API
     messages: List[Dict[str, str]] = [
         {
             "role": "system",
             "content": (
+                f"{system_prompt}\n\n"
                 "You are a helpful Telegram assistant. "
-                "Reply briefly and clearly in the same language as the user."
+                "Reply in the same language as the user."
             ),
         },
         *list(chat_history[user_id]),
@@ -301,6 +375,7 @@ async def main() -> None:
     validate_env()
     init_db()  # Создаем таблицы
     load_all_histories_to_cache()  # Загружаем историю из БД в кэш
+    load_user_modes_from_db()  # Загружаем режимы пользователей
     
     logging.basicConfig(
         level=logging.INFO,
@@ -315,43 +390,66 @@ async def main() -> None:
     
     # ==================== КОМАНДЫ ДЛЯ ВСЕХ ====================
     
-    @dp.message(Command("help"))
-async def cmd_help(message: Message) -> None:
-    if message.from_user:
-        register_user(message.from_user.id)
-    
-    help_text = (
-        "<b>🤖 Помощь — PrimeAi</b>\n\n"
-        "<b>💬 Чат с ИИ</b>\n"
-        "Просто напиши любое текстовое сообщение — я отвечу с помощью нейросети.\n"
-        "Я помню последние 20 сообщений нашего диалога.\n\n"
-        "<b>📋 Команды</b>\n"
-        "/start — приветствие\n"
-        "/help — эта справка\n"
-        "/clear — очистить историю диалога\n"
-        "/whoami — твой Telegram ID\n\n"
-    )
-    
-    # Если пользователь админ — добавляем админ-команды в справку
-    if is_admin(message.from_user.id if message.from_user else None):
-        help_text += (
-            "<b>👑 Админ-команды</b>\n"
-            "/stats — полная статистика бота\n"
-            "/admin_clear &lt;user_id&gt; — очистить историю пользователя\n"
-            "/admin — информация об админ-панели\n"
+    @dp.message(Command("start"))
+    async def cmd_start(message: Message) -> None:
+        if message.from_user:
+            register_user(message.from_user.id)
+        await message.answer(
+            "🤖 *Добро пожаловать в PrimeAi бота!*\n\n"
+            "Задай мне любой вопрос — я отвечу с помощью ИИ.\n"
+            "Я помню историю нашего диалога, даже после перезапуска!\n\n"
+            "📌 *Команды:*\n"
+            "/clear — очистить историю\n"
+            "/mode — выбрать стиль ответов\n"
+            "/help — подробная справка\n"
+            "/whoami — твой Telegram ID",
+            parse_mode="Markdown"
         )
-    
-    await message.answer(help_text, parse_mode="HTML")
+
+    @dp.message(Command("help"))
+    async def cmd_help(message: Message) -> None:
+        if message.from_user:
+            register_user(message.from_user.id)
         
+        current_mode = user_mode.get(message.from_user.id, DEFAULT_MODE)
+        current_mode_name = MODES[current_mode]["name"]
+        
+        help_text = (
+            "<b>🤖 Помощь — PrimeAi</b>\n\n"
+            "<b>💬 Чат с ИИ</b>\n"
+            "Просто напиши любое текстовое сообщение — я отвечу с помощью нейросети.\n"
+            "Я помню последние 20 сообщений нашего диалога.\n\n"
+            "<b>📋 Команды</b>\n"
+            "/start — приветствие\n"
+            "/help — эта справка\n"
+            "/clear — очистить историю диалога\n"
+            "/mode — выбрать стиль ответов\n"
+            "/whoami — твой Telegram ID\n\n"
+            f"🎨 *Текущий режим:* {current_mode_name}\n\n"
+        )
+        
+        # Если пользователь админ — добавляем админ-команды в справку
+        if is_admin(message.from_user.id if message.from_user else None):
+            help_text += (
+                "<b>👑 Админ-команды</b>\n"
+                "/stats — полная статистика бота\n"
+                "/admin_clear &lt;user_id&gt; — очистить историю пользователя\n"
+                "/admin — информация об админ-панели\n"
+            )
+        
+        await message.answer(help_text, parse_mode="HTML")
 
     @dp.message(Command("whoami"))
     async def cmd_whoami(message: Message) -> None:
         uid = message.from_user.id if message.from_user else None
         is_admin_user = is_admin(uid)
+        current_mode = user_mode.get(uid, DEFAULT_MODE)
+        current_mode_name = MODES[current_mode]["name"]
         
         await message.answer(
             f"🆔 Ваш Telegram ID: `{uid}`\n\n"
-            f"👑 Администратор: {'✅ Да' if is_admin_user else '❌ Нет'}\n\n"
+            f"👑 Администратор: {'✅ Да' if is_admin_user else '❌ Нет'}\n"
+            f"🎨 Режим ответа: {MODES[current_mode]['emoji']} *{current_mode_name}*\n\n"
             "Чтобы получить доступ к админ-командам, добавь этот ID в ADMIN_IDS в .env\n"
             "Пример: ADMIN_IDS=123456789",
             parse_mode="Markdown"
@@ -363,6 +461,52 @@ async def cmd_help(message: Message) -> None:
         chat_history[user_id].clear()
         clear_history_in_db(user_id)
         await message.answer("🧹 История диалога очищена!")
+
+    @dp.message(Command("mode"))
+    async def cmd_mode(message: Message, command: CommandObject) -> None:
+        """Выбрать стиль ответов"""
+        args = (command.args or "").strip().lower()
+        
+        if not args:
+            mode_list = "\n".join([
+                f"• `{code}` — {info['emoji']} {info['name']}" 
+                for code, info in MODES.items()
+            ])
+            current_mode = user_mode.get(message.from_user.id, DEFAULT_MODE)
+            current_name = MODES[current_mode]["name"]
+            
+            await message.answer(
+                f"🎨 *Режимы ответа*\n\n"
+                f"{mode_list}\n\n"
+                f"✨ *Текущий режим:* `{current_mode}` — {current_name}\n\n"
+                f"📝 *Использование:* `/mode <режим>`\n"
+                f"Пример: `/mode detailed`\n\n"
+                f"💡 Режим сохраняется и не сбрасывается после перезапуска!",
+                parse_mode="Markdown"
+            )
+            return
+        
+        if args not in MODES:
+            available = ", ".join(MODES.keys())
+            await message.answer(
+                f"❌ Режим `{args}` не найден.\n\n"
+                f"Доступные режимы: {available}\n"
+                f"Используй `/mode` без аргументов для списка.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Сохраняем режим
+        user_mode[message.from_user.id] = args
+        save_user_mode(message.from_user.id, args)
+        
+        mode_info = MODES[args]
+        await message.answer(
+            f"✅ *Режим изменен на {mode_info['emoji']} {mode_info['name']}*\n\n"
+            f"📝 *Описание:* {mode_info['system']}\n\n"
+            f"💡 Теперь я буду отвечать в этом стиле!",
+            parse_mode="Markdown"
+        )
 
     # ==================== АДМИН-КОМАНДЫ ====================
     
@@ -377,12 +521,23 @@ async def cmd_help(message: Message) -> None:
         
         active_users = len(processing_user_ids)
         
+        # Статистика по режимам
+        mode_stats = defaultdict(int)
+        for uid, mode in user_mode.items():
+            mode_stats[mode] += 1
+        
+        mode_stats_text = "\n".join([
+            f"   {MODES[mode]['emoji']} {mode}: {count} пользователей"
+            for mode, count in sorted(mode_stats.items(), key=lambda x: -x[1])
+        ]) or "   нет данных"
+        
         await message.answer(
             f"📊 *Статистика PrimeAi* (админ-панель)\n\n"
             f"👥 *Всего пользователей:* {users_count}\n"
             f"🤖 *Запросов к ИИ:* {requests_count}\n"
             f"⚡ *Активных запросов:* {active_users}\n"
             f"⏱️ *Аптайм:* {h}ч {m}м {s}с\n\n"
+            f"🎨 *Распределение режимов:*\n{mode_stats_text}\n\n"
             f"🧠 *Модель:* `{OPENROUTER_MODEL}`\n"
             f"📝 *max_tokens:* {OPENROUTER_MAX_TOKENS}\n"
             f"💾 *Хранилище:* SQLite (персистентное)\n"
