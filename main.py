@@ -169,9 +169,40 @@ async def main() -> None:
         if message.from_user:
             register_user(message.from_user.id)
         await message.answer(
-            "Добро пожаловать в PrimeAi бота.\n" 
+            "Добро пожаловать в PrimeAi бота.\n"
             "Задай мне любой вопрос и получи мгновенный ответ.\n"
-            "Команда /clear очищает историю."
+            "Команда /clear очищает историю.\n"
+            "Справка: /help"
+        )
+
+    @dp.message(Command("help"))
+    async def cmd_help(message: Message) -> None:
+        if message.from_user:
+            register_user(message.from_user.id)
+        admin_hint = ""
+        if message.from_user and is_admin(message.from_user.id) and ADMIN_IDS:
+            admin_hint = (
+                "\n<b>Админ</b>\n"
+                "/admin — список админ-команд\n"
+                "/stats — статистика бота\n"
+                "/admin_clear &lt;user_id&gt; — сбросить историю пользователю\n"
+            )
+        await message.answer(
+            "<b>Помощь — PrimeAi</b>\n\n"
+            "<b>Чат с ИИ</b>\n"
+            "Напиши любое текстовое сообщение — ответ сгенерирует нейросеть "
+            "(учитывается история последних сообщений).\n\n"
+            "<b>Команды</b>\n"
+            "/start — приветствие\n"
+            "/help — эта справка\n"
+            "/clear — очистить историю диалога\n"
+            "/whoami — твой Telegram ID\n\n"
+            "<b>Советы</b>\n"
+            "• Пока бот отвечает на сообщение, лучше не слать новое — "
+            "иначе придёт напоминание подождать.\n"
+            "• При ошибках проверь ключ и баланс OpenRouter.\n"
+            f"{admin_hint}",
+            parse_mode="HTML",
         )
 
     @dp.message(Command("whoami"))
