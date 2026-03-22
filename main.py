@@ -1,14 +1,15 @@
 import asyncio
 import logging
 import os
+import time
 from collections import defaultdict, deque
-from typing import Deque, Dict, List
+from typing import Deque, Dict, List, Set
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ChatAction
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from dotenv import load_dotenv
 
@@ -30,10 +31,41 @@ ACK_TEXT = os.getenv(
 
 MAX_HISTORY_MESSAGES = 20
 
+BOT_STARTED_AT = time.time()
+
 # user_id -> deque of messages in OpenAI/OpenRouter format
 chat_history: Dict[int, Deque[Dict[str, str]]] = defaultdict(
     lambda: deque(maxlen=MAX_HISTORY_MESSAGES)
 )
+
+# Статистика (в памяти; после перезапуска обнуляется)
+stats_user_ids: Set[int] = set()
+stats_ai_requests: int = 0
+
+
+def _parse_admin_ids() -> Set[int]:
+    raw = os.getenv("ADMIN_IDS", "").strip()
+    if not raw:
+        return set()
+    ids: Set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+    return ids
+
+
+ADMIN_IDS = _parse_admin_ids()
+
+
+def is_admin(user_id: int | None) -> bool:
+    if user_id is None or not ADMIN_IDS:
+        return False
+    return user_id in ADMIN_IDS
+
+
+def register_user(user_id: int) -> None:
+    stats_user_ids.add(user_id)
 
 
 def validate_env() -> None:
@@ -121,11 +153,85 @@ async def main() -> None:
 
     @dp.message(Command("start"))
     async def cmd_start(message: Message) -> None:
+        if message.from_user:
+            register_user(message.from_user.id)
         await message.answer(
             "Добро пожаловать в PrimeAi бота.\n" 
             "Задай мне любой вопрос и получи мгновенный ответ.\n"
             "Команда /clear очищает историю."
         )
+
+    @dp.message(Command("whoami"))
+    async def cmd_whoami(message: Message) -> None:
+        uid = message.from_user.id if message.from_user else None
+        await message.answer(
+            f"Ваш Telegram ID: {uid}\n"
+            "Его можно указать в ADMIN_IDS в .env для доступа к админ-командам."
+        )
+
+    @dp.message(Command("admin"))
+    async def cmd_admin(message: Message) -> None:
+        if not message.from_user:
+            return
+        if not ADMIN_IDS:
+            await message.answer(
+                "Админка не настроена: в .env пустой или отсутствует ADMIN_IDS "
+                "(через запятую, например: ADMIN_IDS=123456789). "
+                "Узнай свой ID командой /whoami."
+            )
+            return
+        if not is_admin(message.from_user.id):
+            await message.answer("Нет доступа.")
+            return
+        await message.answer(
+            "Админ-команды:\n"
+            "/stats — пользователи, запросы к ИИ, аптайм\n"
+            "/admin_clear <user_id> — очистить историю диалога пользователю\n"
+            "/whoami — показать свой Telegram ID (для всех)"
+        )
+
+    @dp.message(Command("stats"))
+    async def cmd_stats(message: Message) -> None:
+        if not message.from_user:
+            return
+        if not ADMIN_IDS:
+            await message.answer("ADMIN_IDS не задан в .env — админка отключена.")
+            return
+        if not is_admin(message.from_user.id):
+            await message.answer("Нет доступа.")
+            return
+        uptime_sec = int(time.time() - BOT_STARTED_AT)
+        h, rem = divmod(uptime_sec, 3600)
+        m, s = divmod(rem, 60)
+        await message.answer(
+            "Статистика бота:\n"
+            f"• Уникальных пользователей: {len(stats_user_ids)}\n"
+            f"• Запросов к ИИ (сообщений): {stats_ai_requests}\n"
+            f"• Аптайм: {h}ч {m}м {s}с\n"
+            f"• Модель: {OPENROUTER_MODEL}\n"
+            f"• max_tokens: {OPENROUTER_MAX_TOKENS}"
+        )
+
+    @dp.message(Command("admin_clear"))
+    async def cmd_admin_clear(message: Message, command: CommandObject) -> None:
+        if not message.from_user:
+            return
+        if not ADMIN_IDS:
+            await message.answer("ADMIN_IDS не задан в .env.")
+            return
+        if not is_admin(message.from_user.id):
+            await message.answer("Нет доступа.")
+            return
+        args = (command.args or "").strip()
+        if not args:
+            await message.answer("Использование: /admin_clear <user_id>")
+            return
+        if not args.isdigit():
+            await message.answer("user_id должен быть числом.")
+            return
+        uid = int(args)
+        chat_history[uid].clear()
+        await message.answer(f"История диалога для user_id={uid} очищена.")
 
     @dp.message(Command("clear"))
     async def cmd_clear(message: Message) -> None:
@@ -137,6 +243,10 @@ async def main() -> None:
         user = message.from_user
         if user is None or message.text is None:
             return
+
+        register_user(user.id)
+        global stats_ai_requests
+        stats_ai_requests += 1
 
         ack_msg = await message.answer(ACK_TEXT)
         try:
