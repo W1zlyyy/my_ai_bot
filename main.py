@@ -4,8 +4,9 @@ import os
 import sqlite3
 import time
 from collections import defaultdict, deque
-from typing import Deque, Dict, List, Set, Optional
+from typing import Deque, Dict, List, Set
 from contextlib import contextmanager
+from functools import wraps
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
@@ -36,6 +37,45 @@ MAX_HISTORY_MESSAGES = 20
 DB_PATH = "bot.db"
 
 BOT_STARTED_AT = time.time()
+
+# ==================== АДМИНКА ====================
+
+def _parse_admin_ids() -> Set[int]:
+    """Парсит ADMIN_IDS из .env"""
+    raw = os.getenv("ADMIN_IDS", "").strip()
+    if not raw:
+        return set()
+    ids: Set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+    return ids
+
+ADMIN_IDS = _parse_admin_ids()
+
+def is_admin(user_id: int | None) -> bool:
+    """Проверяет, является ли пользователь администратором"""
+    if user_id is None or not ADMIN_IDS:
+        return False
+    return user_id in ADMIN_IDS
+
+def admin_only(func):
+    """Декоратор для команд, доступных только админам"""
+    @wraps(func)
+    async def wrapper(message: Message, *args, **kwargs):
+        if not message.from_user:
+            return
+        if not is_admin(message.from_user.id):
+            await message.answer(
+                "⛔ *Доступ запрещен*\n\n"
+                "Эта команда доступна только администраторам бота.\n"
+                "Узнать свой ID можно командой `/whoami`.",
+                parse_mode="Markdown"
+            )
+            return
+        return await func(message, *args, **kwargs)
+    return wrapper
 
 # ==================== БАЗА ДАННЫХ ====================
 
@@ -120,27 +160,25 @@ def get_stats_from_db() -> tuple[int, int]:
 def increment_users_count():
     """Увеличить счетчик уникальных пользователей"""
     with get_db() as conn:
-        conn.execute(
-            "UPDATE stats SET value = value + 1 WHERE key = 'users_count' AND value = (SELECT value FROM stats WHERE key = 'users_count')"
-        )
+        conn.execute("UPDATE stats SET value = value + 1 WHERE key = 'users_count'")
 
 def increment_ai_requests():
     """Увеличить счетчик запросов к AI"""
     with get_db() as conn:
         conn.execute("UPDATE stats SET value = value + 1 WHERE key = 'ai_requests'")
 
-def get_or_create_user_history(user_id: int) -> List[Dict[str, str]]:
-    """Получить историю пользователя из БД или вернуть пустой список"""
-    history = get_history_from_db(user_id, MAX_HISTORY_MESSAGES)
-    return history
-
-def sync_history_to_db(user_id: int, history: Deque[Dict[str, str]]):
-    """Синхронизировать историю из памяти в БД (сохраняет только последние сообщения)"""
-    # Очищаем старую историю
-    clear_history_in_db(user_id)
-    # Сохраняем новые сообщения
-    for msg in history:
-        save_message(user_id, msg["role"], msg["content"])
+def register_user(user_id: int) -> bool:
+    """Зарегистрировать нового пользователя. Возвращает True если пользователь новый"""
+    with get_db() as conn:
+        # Проверяем, есть ли у пользователя сообщения в истории
+        cur = conn.execute("SELECT COUNT(*) FROM history WHERE user_id = ?", (user_id,))
+        count = cur.fetchone()[0]
+        
+        if count == 0:
+            # Новый пользователь
+            conn.execute("UPDATE stats SET value = value + 1 WHERE key = 'ai_requests'")
+            return True
+    return False
 
 # ==================== КЭШ В ПАМЯТИ ====================
 
@@ -161,19 +199,6 @@ def load_all_histories_to_cache():
             chat_history[user_id] = deque(history, maxlen=MAX_HISTORY_MESSAGES)
     
     logging.info(f"Загружена история для {len(chat_history)} пользователей")
-
-def register_user(user_id: int) -> bool:
-    """Зарегистрировать нового пользователя. Возвращает True если пользователь новый"""
-    with get_db() as conn:
-        # Проверяем, есть ли у пользователя сообщения в истории
-        cur = conn.execute("SELECT COUNT(*) FROM history WHERE user_id = ?", (user_id,))
-        count = cur.fetchone()[0]
-        
-        if count == 0:
-            # Новый пользователь
-            conn.execute("UPDATE stats SET value = value + 1 WHERE key = 'users_count'")
-            return True
-    return False
 
 # ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С OPENROUTER ====================
 
@@ -269,7 +294,7 @@ async def ask_openrouter(
         logging.error(f"Network error: {e}")
         return "🌐 Не удалось подключиться к AI. Проверьте интернет."
 
-# ==================== ОСНОВНАЯ ФУНКЦИЯ ====================
+# ==================== КОМАНДЫ БОТА ====================
 
 async def main() -> None:
     # Инициализация
@@ -288,29 +313,29 @@ async def main() -> None:
     dp = Dispatcher()
     session = aiohttp.ClientSession()
     
-    # ==================== КОМАНДЫ ====================
+    # ==================== КОМАНДЫ ДЛЯ ВСЕХ ====================
     
     @dp.message(Command("start"))
     async def cmd_start(message: Message) -> None:
         if message.from_user:
-            is_new = register_user(message.from_user.id)
-            if is_new:
-                logging.info(f"Новый пользователь: {message.from_user.id}")
+            register_user(message.from_user.id)
         await message.answer(
-            "🤖 Добро пожаловать в PrimeAi бота!\n\n"
+            "🤖 *Добро пожаловать в PrimeAi бота!*\n\n"
             "Задай мне любой вопрос — я отвечу с помощью ИИ.\n"
             "Я помню историю нашего диалога, даже после перезапуска!\n\n"
-            "📌 Команды:\n"
+            "📌 *Команды:*\n"
             "/clear — очистить историю диалога\n"
-            "/stats — моя статистика\n"
-            "/help — подробная справка"
+            "/help — подробная справка\n"
+            "/whoami — твой Telegram ID",
+            parse_mode="Markdown"
         )
 
     @dp.message(Command("help"))
     async def cmd_help(message: Message) -> None:
         if message.from_user:
             register_user(message.from_user.id)
-        await message.answer(
+        
+        help_text = (
             "<b>🤖 Помощь — PrimeAi</b>\n\n"
             "<b>💬 Чат с ИИ</b>\n"
             "Просто напиши любое текстовое сообщение — я отвечу с помощью нейросети.\n"
@@ -319,21 +344,30 @@ async def main() -> None:
             "/start — приветствие\n"
             "/help — эта справка\n"
             "/clear — очистить историю диалога\n"
-            "/stats — статистика работы бота\n"
             "/whoami — твой Telegram ID\n\n"
-            "<b>👑 Админ-команды</b>\n"
-            "/stats — полная статистика\n"
-            "/admin_clear &lt;user_id&gt; — очистить историю пользователя",
-            parse_mode="HTML",
         )
+        
+        # Если пользователь админ — добавляем админ-команды в справку
+        if is_admin(message.from_user.id if message.from_user else None):
+            help_text += (
+                "<b>👑 Админ-команды</b>\n"
+                "/stats — полная статистика бота\n"
+                "/admin_clear &lt;user_id&gt; — очистить историю пользователя\n"
+                "/admin — информация об админ-панели\n"
+            )
+        
+        await message.answer(help_text, parse_mode="HTML")
 
     @dp.message(Command("whoami"))
     async def cmd_whoami(message: Message) -> None:
         uid = message.from_user.id if message.from_user else None
+        is_admin_user = is_admin(uid)
+        
         await message.answer(
             f"🆔 Ваш Telegram ID: `{uid}`\n\n"
-            "Его можно указать в ADMIN_IDS в .env для доступа к админ-командам.\n"
-            "Пример: ADMIN_IDS=123456789,987654321",
+            f"👑 Администратор: {'✅ Да' if is_admin_user else '❌ Нет'}\n\n"
+            "Чтобы получить доступ к админ-командам, добавь этот ID в ADMIN_IDS в .env\n"
+            "Пример: ADMIN_IDS=123456789",
             parse_mode="Markdown"
         )
 
@@ -344,51 +378,37 @@ async def main() -> None:
         clear_history_in_db(user_id)
         await message.answer("🧹 История диалога очищена!")
 
+    # ==================== АДМИН-КОМАНДЫ ====================
+    
     @dp.message(Command("stats"))
+    @admin_only
     async def cmd_stats(message: Message) -> None:
+        """Команда /stats — доступна только админам"""
         users_count, requests_count = get_stats_from_db()
         uptime_sec = int(time.time() - BOT_STARTED_AT)
         h, rem = divmod(uptime_sec, 3600)
         m, s = divmod(rem, 60)
         
-        # Проверяем, админ ли пользователь
-        from dotenv import load_dotenv
-        load_dotenv()
-        admin_ids_str = os.getenv("ADMIN_IDS", "")
-        admin_ids = {int(x.strip()) for x in admin_ids_str.split(",") if x.strip().isdigit()}
-        is_admin_user = message.from_user and message.from_user.id in admin_ids
+        active_users = len(processing_user_ids)
         
-        if is_admin_user:
-            await message.answer(
-                f"📊 *Статистика PrimeAi*\n\n"
-                f"👥 *Уникальных пользователей:* {users_count}\n"
-                f"🤖 *Запросов к ИИ:* {requests_count}\n"
-                f"⏱️ *Аптайм:* {h}ч {m}м {s}с\n"
-                f"🧠 *Модель:* `{OPENROUTER_MODEL}`\n"
-                f"📝 *max_tokens:* {OPENROUTER_MAX_TOKENS}\n"
-                f"💾 *Хранилище:* SQLite (данные сохраняются)",
-                parse_mode="Markdown"
-            )
-        else:
-            await message.answer(
-                f"🤖 *PrimeAi — статистика*\n\n"
-                f"🧠 Модель: `{OPENROUTER_MODEL}`\n"
-                f"📝 Максимальная длина ответа: {OPENROUTER_MAX_TOKENS} символов\n"
-                f"💬 Я помню последние {MAX_HISTORY_MESSAGES} сообщений\n"
-                f"⏱️ Работаю без перерыва: {h}ч {m}м {s}с\n\n"
-                f"💡 *Совет:* Используй /clear чтобы начать диалог заново!",
-                parse_mode="Markdown"
-            )
+        await message.answer(
+            f"📊 *Статистика PrimeAi* (админ-панель)\n\n"
+            f"👥 *Всего пользователей:* {users_count}\n"
+            f"🤖 *Запросов к ИИ:* {requests_count}\n"
+            f"⚡ *Активных запросов:* {active_users}\n"
+            f"⏱️ *Аптайм:* {h}ч {m}м {s}с\n\n"
+            f"🧠 *Модель:* `{OPENROUTER_MODEL}`\n"
+            f"📝 *max_tokens:* {OPENROUTER_MAX_TOKENS}\n"
+            f"💾 *Хранилище:* SQLite (персистентное)\n"
+            f"👑 *Администраторы:* {', '.join(str(uid) for uid in ADMIN_IDS) if ADMIN_IDS else 'не заданы'}",
+            parse_mode="Markdown"
+        )
 
     @dp.message(Command("admin"))
+    @admin_only
     async def cmd_admin(message: Message) -> None:
-        if not message.from_user:
-            return
-        
-        admin_ids_str = os.getenv("ADMIN_IDS", "")
-        admin_ids = {int(x.strip()) for x in admin_ids_str.split(",") if x.strip().isdigit()}
-        
-        if not admin_ids:
+        """Информация об админ-панели"""
+        if not ADMIN_IDS:
             await message.answer(
                 "🔧 Админка не настроена.\n"
                 "Добавь ADMIN_IDS в .env файл.\n"
@@ -396,49 +416,53 @@ async def main() -> None:
             )
             return
         
-        if message.from_user.id not in admin_ids:
-            await message.answer("⛔ Нет доступа к админ-командам.")
-            return
+        users_count, requests_count = get_stats_from_db()
         
         await message.answer(
             "👑 *Админ-панель PrimeAi*\n\n"
             "Доступные команды:\n"
-            "/stats — полная статистика\n"
-            "/admin_clear <user_id> — очистить историю пользователя\n"
-            "/whoami — показать свой Telegram ID\n\n"
-            "Все данные сохраняются в SQLite и не теряются при перезапуске!",
+            "📊 `/stats` — полная статистика бота\n"
+            "🗑️ `/admin_clear <user_id>` — очистить историю пользователя\n"
+            "🆔 `/whoami` — показать свой Telegram ID\n\n"
+            "📁 *Хранилище:* SQLite — данные сохраняются при перезапуске\n"
+            f"👥 *Всего пользователей в БД:* {users_count}\n"
+            f"🤖 *Всего запросов:* {requests_count}\n"
+            f"💾 *База данных:* `{DB_PATH}`",
             parse_mode="Markdown"
         )
 
     @dp.message(Command("admin_clear"))
+    @admin_only
     async def cmd_admin_clear(message: Message, command: CommandObject) -> None:
-        if not message.from_user:
-            return
-        
-        admin_ids_str = os.getenv("ADMIN_IDS", "")
-        admin_ids = {int(x.strip()) for x in admin_ids_str.split(",") if x.strip().isdigit()}
-        
-        if not admin_ids:
-            await message.answer("ADMIN_IDS не задан в .env.")
-            return
-        
-        if message.from_user.id not in admin_ids:
-            await message.answer("⛔ Нет доступа.")
-            return
-        
+        """Очистка истории пользователя — только для админов"""
         args = (command.args or "").strip()
         if not args:
-            await message.answer("Использование: /admin_clear <user_id>")
+            await message.answer("📝 Использование: `/admin_clear <user_id>`", parse_mode="Markdown")
             return
         if not args.isdigit():
-            await message.answer("user_id должен быть числом.")
+            await message.answer("❌ user_id должен быть числом.")
             return
         
         uid = int(args)
-        chat_history[uid].clear()
+        
+        # Проверяем, есть ли у пользователя история
+        history = get_history_from_db(uid, 1)
+        if not history:
+            await message.answer(f"⚠️ Пользователь с ID `{uid}` не найден в базе данных.", parse_mode="Markdown")
+            return
+        
+        # Очищаем историю
+        if uid in chat_history:
+            chat_history[uid].clear()
         clear_history_in_db(uid)
-        await message.answer(f"✅ История диалога для user_id={uid} очищена.")
+        
+        await message.answer(
+            f"✅ История диалога для пользователя `{uid}` очищена.",
+            parse_mode="Markdown"
+        )
 
+    # ==================== ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ ====================
+    
     @dp.message(F.text)
     async def handle_text(message: Message) -> None:
         user = message.from_user
@@ -451,7 +475,6 @@ async def main() -> None:
 
         processing_user_ids.add(user.id)
         try:
-            # Регистрируем пользователя (увеличиваем счетчик если новый)
             register_user(user.id)
             increment_ai_requests()
             
@@ -484,7 +507,8 @@ async def main() -> None:
         finally:
             processing_user_ids.discard(user.id)
 
-    # Проверка подключения к Telegram
+    # ==================== ПРОВЕРКА ПОДКЛЮЧЕНИЯ ====================
+    
     connected = False
     for attempt in range(1, 4):
         try:
@@ -503,6 +527,7 @@ async def main() -> None:
         )
 
     logging.info(f"✅ Бот PrimeAi запущен! Модель: {OPENROUTER_MODEL}")
+    logging.info(f"👑 Администраторы: {', '.join(str(uid) for uid in ADMIN_IDS) if ADMIN_IDS else 'не заданы'}")
     
     try:
         await dp.start_polling(bot)
