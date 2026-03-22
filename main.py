@@ -7,6 +7,7 @@ from typing import Deque, Dict, List
 import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.enums import ChatAction
 from aiogram.filters import Command
 from aiogram.types import Message
 from dotenv import load_dotenv
@@ -21,6 +22,11 @@ FALLBACK_OPENROUTER_MODEL = "z-ai/glm-4.5-air"
 OPENROUTER_MODEL = os.getenv("OPENROUTER_DEFAULT_MODEL", FALLBACK_OPENROUTER_MODEL).strip().strip("\"'")
 OPENROUTER_MAX_TOKENS = int(os.getenv("OPENROUTER_MAX_TOKENS", "512"))
 TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL", "").strip()
+# Сообщение сразу после текста пользователя (до ответа модели)
+ACK_TEXT = os.getenv(
+    "BOT_ACK_TEXT",
+    "Запрос принят, обрабатываю…",
+).strip() or "Запрос принят, обрабатываю…"
 
 MAX_HISTORY_MESSAGES = 20
 
@@ -133,6 +139,11 @@ async def main() -> None:
             return
 
         try:
+            await message.answer(ACK_TEXT)
+            await bot.send_chat_action(
+                chat_id=message.chat.id,
+                action=ChatAction.TYPING,
+            )
             reply = await ask_openrouter(session, user.id, message.text)
             await message.answer(reply)
         except Exception as exc:
