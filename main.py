@@ -28,6 +28,11 @@ ACK_TEXT = os.getenv(
     "BOT_ACK_TEXT",
     "Запрос принят, обрабатываю…",
 ).strip() or "Запрос принят, обрабатываю…"
+# Если пользователь пишет, пока идёт ответ на прошлое сообщение
+BUSY_TEXT = os.getenv(
+    "BOT_BUSY_TEXT",
+    "Подожди, сейчас обрабатываю твоё прошлое сообщение.",
+).strip() or "Подожди, сейчас обрабатываю твоё прошлое сообщение."
 
 MAX_HISTORY_MESSAGES = 20
 
@@ -41,6 +46,9 @@ chat_history: Dict[int, Deque[Dict[str, str]]] = defaultdict(
 # Статистика (в памяти; после перезапуска обнуляется)
 stats_user_ids: Set[int] = set()
 stats_ai_requests: int = 0
+
+# Пользователи, у которых сейчас выполняется запрос к ИИ (один активный запрос на user_id)
+processing_user_ids: Set[int] = set()
 
 
 def _parse_admin_ids() -> Set[int]:
@@ -244,30 +252,38 @@ async def main() -> None:
         if user is None or message.text is None:
             return
 
-        register_user(user.id)
-        global stats_ai_requests
-        stats_ai_requests += 1
+        if user.id in processing_user_ids:
+            await message.answer(BUSY_TEXT)
+            return
 
-        ack_msg = await message.answer(ACK_TEXT)
+        processing_user_ids.add(user.id)
         try:
-            await bot.send_chat_action(
-                chat_id=message.chat.id,
-                action=ChatAction.TYPING,
-            )
-            reply = await ask_openrouter(session, user.id, message.text)
-            await message.answer(reply)
-        except Exception as exc:
-            logging.exception("Failed to handle message")
-            await message.answer(f"Ошибка при обращении к OpenRouter: {exc}")
-        finally:
+            register_user(user.id)
+            global stats_ai_requests
+            stats_ai_requests += 1
+
+            ack_msg = await message.answer(ACK_TEXT)
             try:
-                await bot.delete_message(
-                    chat_id=ack_msg.chat.id,
-                    message_id=ack_msg.message_id,
+                await bot.send_chat_action(
+                    chat_id=message.chat.id,
+                    action=ChatAction.TYPING,
                 )
-            except Exception:
-                # Нет прав в группе, сообщение уже удалено и т.д.
-                logging.debug("Could not delete ack message", exc_info=True)
+                reply = await ask_openrouter(session, user.id, message.text)
+                await message.answer(reply)
+            except Exception as exc:
+                logging.exception("Failed to handle message")
+                await message.answer(f"Ошибка при обращении к OpenRouter: {exc}")
+            finally:
+                try:
+                    await bot.delete_message(
+                        chat_id=ack_msg.chat.id,
+                        message_id=ack_msg.message_id,
+                    )
+                except Exception:
+                    # Нет прав в группе, сообщение уже удалено и т.д.
+                    logging.debug("Could not delete ack message", exc_info=True)
+        finally:
+            processing_user_ids.discard(user.id)
 
     # Verify Telegram connectivity before long polling to surface network issues early.
     connected = False
