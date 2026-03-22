@@ -19,8 +19,13 @@ load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+# Модель по умолчанию, если OPENROUTER_DEFAULT_MODEL не задан в .env
+DEFAULT_OPENROUTER_MODEL = "stepfun/step-3.5-flash:free"
+# Запасная модель при 404 (модель недоступна в OpenRouter)
 FALLBACK_OPENROUTER_MODEL = "z-ai/glm-4.5-air"
-OPENROUTER_MODEL = os.getenv("OPENROUTER_DEFAULT_MODEL", FALLBACK_OPENROUTER_MODEL).strip().strip("\"'")
+OPENROUTER_MODEL = os.getenv(
+    "OPENROUTER_DEFAULT_MODEL", DEFAULT_OPENROUTER_MODEL
+).strip().strip("\"'")
 OPENROUTER_MAX_TOKENS = int(os.getenv("OPENROUTER_MAX_TOKENS", "512"))
 TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL", "").strip()
 # Сообщение сразу после текста пользователя (до ответа модели)
