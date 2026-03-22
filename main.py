@@ -138,8 +138,8 @@ async def main() -> None:
         if user is None or message.text is None:
             return
 
+        ack_msg = await message.answer(ACK_TEXT)
         try:
-            await message.answer(ACK_TEXT)
             await bot.send_chat_action(
                 chat_id=message.chat.id,
                 action=ChatAction.TYPING,
@@ -149,6 +149,15 @@ async def main() -> None:
         except Exception as exc:
             logging.exception("Failed to handle message")
             await message.answer(f"Ошибка при обращении к OpenRouter: {exc}")
+        finally:
+            try:
+                await bot.delete_message(
+                    chat_id=ack_msg.chat.id,
+                    message_id=ack_msg.message_id,
+                )
+            except Exception:
+                # Нет прав в группе, сообщение уже удалено и т.д.
+                logging.debug("Could not delete ack message", exc_info=True)
 
     # Verify Telegram connectivity before long polling to surface network issues early.
     connected = False
