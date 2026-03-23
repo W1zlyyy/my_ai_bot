@@ -317,24 +317,13 @@ async def ask_openrouter(
     
     try:
         async with session.post(endpoint, json=payload, headers=headers, timeout=60) as resp:
-            if resp.status == 404 and payload["model"] != FALLBACK_OPENROUTER_MODEL:
-                logging.warning(
-                    "OpenRouter model '%s' not found. Falling back to '%s'.",
-                    payload["model"],
-                    FALLBACK_OPENROUTER_MODEL,
-                )
-                payload["model"] = FALLBACK_OPENROUTER_MODEL
-                async with session.post(endpoint, json=payload, headers=headers, timeout=60) as retry_resp:
-                    if retry_resp.status != 200:
-                        err_body = await retry_resp.text()
-                        logging.error("LLM API error after fallback (status=%s): %s", retry_resp.status, err_body)
-                        raise RuntimeError(USER_ERROR_AI)
-                    data = await retry_resp.json()
-            elif resp.status != 200:
+            if resp.status != 200:
                 error_text = await resp.text()
                 logging.warning("LLM API error (status=%s): %s", resp.status, error_text)
                 
                 # Обработка специфических ошибок
+                if resp.status == 404:
+                    return "❌ Модель временно недоступна. Попробуйте позже."
                 if resp.status == 429:
                     return "⚠️ Слишком много запросов. Подождите немного."
                 if resp.status == 402:
@@ -343,8 +332,8 @@ async def ask_openrouter(
                     return "🔑 Проблема с API-ключом. Уведомите администратора."
                 
                 raise RuntimeError(USER_ERROR_AI)
-            else:
-                data = await resp.json()
+            
+            data = await resp.json()
 
         answer = (
             data.get("choices", [{}])[0]
@@ -359,6 +348,13 @@ async def ask_openrouter(
         chat_history[user_id].append({"role": "assistant", "content": answer})
         
         return answer
+        
+    except asyncio.TimeoutError:
+        logging.error("OpenRouter request timeout")
+        return "⏰ Превышено время ожидания ответа. Попробуйте позже."
+    except aiohttp.ClientError as e:
+        logging.error(f"Network error: {e}")
+        return "🌐 Не удалось подключиться к AI. Проверьте интернет."
         
     except asyncio.TimeoutError:
         logging.error("OpenRouter request timeout")
