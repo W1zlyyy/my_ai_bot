@@ -3,6 +3,8 @@ import logging
 import os
 import sqlite3
 import time
+import json
+import base64
 from collections import defaultdict, deque
 from typing import Deque, Dict, List, Set
 from contextlib import contextmanager
@@ -13,7 +15,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import Message, BufferedInputFile
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -29,7 +31,6 @@ OPENROUTER_MAX_TOKENS = int(os.getenv("OPENROUTER_MAX_TOKENS", "512"))
 TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL", "").strip()
 
 # Модель для генерации изображений (можно переопределить в .env)
-# Действительные модели: black-forest-labs/flux-1.1-pro, dall-e-3, stabilityai/stable-diffusion-3.5-large, ideogram/ideogram-v2
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "black-forest-labs/flux.2-klein-4b").strip()
 
 ACK_TEXT = os.getenv("BOT_ACK_TEXT", "Запрос принят, обрабатываю…").strip() or "Запрос принят, обрабатываю…"
@@ -430,11 +431,10 @@ async def main() -> None:
             parse_mode="Markdown"
         )
 
-    # ==================== КОМАНДА ГЕНЕРАЦИИ ИЗОБРАЖЕНИЙ ====================
-    # ==================== КОМАНДА ГЕНЕРАЦИИ ИЗОБРАЖЕНИЙ (ПОДДЕРЖКА BASE64) ====================
+    # ==================== КОМАНДА ГЕНЕРАЦИИ ИЗОБРАЖЕНИЙ (ОТЛАДОЧНАЯ) ====================
     @dp.message(Command("image"))
     async def cmd_image(message: Message, command: CommandObject) -> None:
-        """Генерация изображения по описанию"""
+        """Генерация изображения по описанию (отладочная)"""
         prompt = (command.args or "").strip()
         
         if not prompt:
@@ -472,67 +472,101 @@ async def main() -> None:
                 ) as resp:
                     response_text = await resp.text()
                     if resp.status != 200:
-                        logging.error(f"Image generation error: {resp.status} - {response_text}")
-                        if resp.status == 429:
-                            await message.answer("⚠️ Слишком много запросов. Подождите немного.")
-                        elif resp.status == 402:
-                            await message.answer("💰 Недостаточно средств на балансе OpenRouter. Пополните баланс.")
-                        elif resp.status == 404:
-                            await message.answer("❌ Модель временно недоступна. Попробуйте позже или сообщите администратору.")
-                        elif resp.status == 401:
-                            await message.answer("🔑 Ошибка авторизации. Проверьте API-ключ.")
+                        if is_admin(message.from_user.id):
+                            await message.answer(
+                                f"❌ Ошибка {resp.status}:\n```\n{response_text[:1000]}\n```",
+                                parse_mode="Markdown"
+                            )
                         else:
-                            if is_admin(message.from_user.id):
-                                await message.answer(
-                                    f"❌ Ошибка {resp.status}:\n```\n{response_text[:500]}\n```\n"
-                                    "Проверьте баланс и идентификатор модели.",
-                                    parse_mode="Markdown"
-                                )
-                            else:
-                                await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
+                            await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
                         return
                     
                     data = await resp.json()
-                    # Извлекаем контент (URL или base64)
-                    content = data.get("choices", [{}])[0].get("message", {}).get("content")
-                    if not content:
-                        logging.error(f"Empty content in response: {data}")
-                        await message.answer("❌ Не удалось получить изображение. Попробуйте другой запрос.")
-                        return
                     
-                    # Если content — это список, берём первый элемент
-                    if isinstance(content, list):
-                        content = content[0] if content else None
-                        if not content:
-                            await message.answer("❌ Не удалось получить изображение. Попробуйте другой запрос.")
-                            return
+                    # Отправляем JSON админу
+                    if is_admin(message.from_user.id):
+                        json_str = json.dumps(data, indent=2, ensure_ascii=False)
+                        if len(json_str) > 4000:
+                            json_str = json_str[:4000] + "\n... (обрезано)"
+                        await message.answer(
+                            f"📦 *Ответ OpenRouter:*\n```json\n{json_str}\n```",
+                            parse_mode="Markdown"
+                        )
                     
-                    # Определяем тип: URL или base64
-                    if isinstance(content, str) and content.startswith("http"):
-                        # Отправляем по URL
+                    # Пытаемся извлечь изображение
+                    image_url = None
+                    image_base64 = None
+                    
+                    # 1. choices[0].message.content
+                    if data.get("choices"):
+                        msg = data["choices"][0].get("message", {})
+                        content = msg.get("content")
+                        if content:
+                            if isinstance(content, str) and content.startswith("http"):
+                                image_url = content
+                            elif isinstance(content, str) and content.startswith("data:image"):
+                                image_base64 = content
+                            elif isinstance(content, list) and content:
+                                first = content[0]
+                                if isinstance(first, str) and first.startswith("http"):
+                                    image_url = first
+                                elif isinstance(first, str) and first.startswith("data:image"):
+                                    image_base64 = first
+                        # 2. choices[0].message.images
+                        if not image_url and not image_base64 and msg.get("images"):
+                            for img in msg["images"]:
+                                if img.get("image_url", {}).get("url"):
+                                    image_url = img["image_url"]["url"]
+                                    break
+                                if img.get("url"):
+                                    image_url = img["url"]
+                                    break
+                                if img.get("data"):
+                                    image_base64 = img["data"]
+                                    break
+                    
+                    # 3. data[0].url / data[0].b64_json
+                    if not image_url and not image_base64 and data.get("data"):
+                        for item in data["data"]:
+                            if item.get("url"):
+                                image_url = item["url"]
+                                break
+                            if item.get("b64_json"):
+                                image_base64 = item["b64_json"]
+                                break
+                    
+                    if image_url:
                         await message.answer_photo(
-                            photo=content,
+                            photo=image_url,
                             caption=f"✨ *{prompt}*",
                             parse_mode="Markdown"
                         )
-                    elif isinstance(content, str) and content.startswith("data:image"):
-                        # Извлекаем base64 (формат data:image/png;base64,<data>)
-                        import base64
+                        return
+                    
+                    if image_base64:
                         try:
-                            header, b64data = content.split(",", 1)
-                            image_data = base64.b64decode(b64data)
-                            from aiogram.types import BufferedInputFile
+                            # Убираем префикс data:image/...;base64, если есть
+                            if image_base64.startswith("data:image"):
+                                header, b64 = image_base64.split(",", 1)
+                            else:
+                                b64 = image_base64
+                            img_bytes = base64.b64decode(b64)
                             await message.answer_photo(
-                                photo=BufferedInputFile(image_data, filename="image.png"),
+                                photo=BufferedInputFile(img_bytes, filename="image.png"),
                                 caption=f"✨ *{prompt}*",
                                 parse_mode="Markdown"
                             )
+                            return
                         except Exception as e:
-                            logging.error(f"Failed to decode base64 image: {e}")
-                            await message.answer("❌ Не удалось обработать изображение. Попробуйте другой запрос.")
+                            logging.error(f"Base64 decode error: {e}")
+                            await message.answer("❌ Не удалось обработать изображение (ошибка декодирования).")
+                            return
+                    
+                    # Если не нашли – сообщаем
+                    if is_admin(message.from_user.id):
+                        await message.answer("❌ Не удалось найти изображение в ответе. Проверьте JSON выше.")
                     else:
-                        logging.error(f"Unexpected content type: {type(content)} - {content[:200]}")
-                        await message.answer("❌ Не удалось получить изображение в ожидаемом формате. Попробуйте другой запрос.")
+                        await message.answer("❌ Не удалось получить изображение. Попробуйте другой запрос.")
                         
         except asyncio.TimeoutError:
             await message.answer("⏰ Превышено время ожидания. Попробуйте позже.")
