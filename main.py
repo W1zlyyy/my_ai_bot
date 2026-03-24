@@ -327,7 +327,7 @@ async def ask_openrouter(
                 if resp.status == 429:
                     return "⚠️ Слишком много запросов. Подождите немного."
                 if resp.status == 402:
-                    return "💰 Закончились кредиты OpenRouter. Уведомите администратора."
+                    return "💰 Закончились кредиты. Уведомите администратора."
                 if resp.status == 401:
                     return "🔑 Проблема с API-ключом. Уведомите администратора."
                 
@@ -502,7 +502,70 @@ async def main() -> None:
             f"💡 Теперь я буду отвечать в этом стиле!",
             parse_mode="Markdown"
         )
-
+        @dp.message(Command("image"))
+    async def cmd_image(message: Message, command: CommandObject) -> None:
+        """Генерация изображения по описанию"""
+        prompt = (command.args or "").strip()
+        
+        if not prompt:
+            await message.answer(
+                "🎨 *Генерация изображений*\n\n"
+                "Использование: `/image <описание>`\n"
+                "Пример: `/image кот в космосе в скафандре`\n\n"
+                "💡 Модель: PrimeAi (высокое качество, 10⭐ за картинку)",
+                parse_mode="Markdown"
+            )
+            return
+        
+        await message.answer(f"🎨 Генерирую: *{prompt}*", parse_mode="Markdown")
+        await bot.send_chat_action(message.chat.id, action="upload_photo")
+        
+        try:
+            async with aiohttp.ClientSession() as img_session:
+                async with img_session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "flux/flux.1",   # можно заменить на "dall-e-3", "stabilityai/stable-diffusion-3.5-large"
+                        "messages": [{"role": "user", "content": prompt}],
+                        "modalities": ["image"],
+                        "image_config": {
+                            "size": "1024x1024",
+                            "quality": "standard"
+                        }
+                    },
+                    timeout=60
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        logging.error(f"Image generation error: {resp.status} - {error_text}")
+                        
+                        if resp.status == 429:
+                            await message.answer("⚠️ Слишком много запросов. Подождите немного.")
+                        elif resp.status == 402:
+                            await message.answer("💰 Недостаточно средств на балансе")
+                        else:
+                            await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
+                        return
+                    
+                    data = await resp.json()
+                    image_url = data["choices"][0]["message"]["content"]
+                    
+                    await message.answer_photo(
+                        photo=image_url,
+                        caption=f"✨ *{prompt}*",
+                        parse_mode="Markdown"
+                    )
+                    
+        except asyncio.TimeoutError:
+            await message.answer("⏰ Превышено время ожидания. Попробуйте позже.")
+        except Exception as e:
+            logging.exception("Image generation unexpected error")
+            await message.answer("❌ Произошла ошибка. Попробуйте позже.")
+            
     # ==================== АДМИН-КОМАНДЫ ====================
     
     @dp.message(Command("stats"))
