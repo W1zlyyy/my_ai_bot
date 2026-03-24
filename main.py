@@ -431,10 +431,10 @@ async def main() -> None:
         )
 
     # ==================== КОМАНДА ГЕНЕРАЦИИ ИЗОБРАЖЕНИЙ ====================
-   
+    # ==================== КОМАНДА ГЕНЕРАЦИИ ИЗОБРАЖЕНИЙ (ПОДДЕРЖКА BASE64) ====================
     @dp.message(Command("image"))
     async def cmd_image(message: Message, command: CommandObject) -> None:
-        """Генерация изображения по описанию (отладочная версия)"""
+        """Генерация изображения по описанию"""
         prompt = (command.args or "").strip()
         
         if not prompt:
@@ -472,56 +472,67 @@ async def main() -> None:
                 ) as resp:
                     response_text = await resp.text()
                     if resp.status != 200:
-                        # Если ошибка, показываем её админу
-                        if is_admin(message.from_user.id):
-                            await message.answer(
-                                f"❌ Ошибка {resp.status}:\n```\n{response_text[:500]}\n```",
-                                parse_mode="Markdown"
-                            )
+                        logging.error(f"Image generation error: {resp.status} - {response_text}")
+                        if resp.status == 429:
+                            await message.answer("⚠️ Слишком много запросов. Подождите немного.")
+                        elif resp.status == 402:
+                            await message.answer("💰 Недостаточно средств на балансе OpenRouter. Пополните баланс.")
+                        elif resp.status == 404:
+                            await message.answer("❌ Модель временно недоступна. Попробуйте позже или сообщите администратору.")
+                        elif resp.status == 401:
+                            await message.answer("🔑 Ошибка авторизации. Проверьте API-ключ.")
                         else:
-                            await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
+                            if is_admin(message.from_user.id):
+                                await message.answer(
+                                    f"❌ Ошибка {resp.status}:\n```\n{response_text[:500]}\n```\n"
+                                    "Проверьте баланс и идентификатор модели.",
+                                    parse_mode="Markdown"
+                                )
+                            else:
+                                await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
                         return
                     
-                    # Успешный ответ – разбираем JSON
                     data = await resp.json()
-                    # Отправляем админу полный JSON (для отладки)
-                    if is_admin(message.from_user.id):
-                        import json
-                        await message.answer(
-                            f"📦 *Ответ OpenRouter (JSON):*\n```json\n{json.dumps(data, indent=2, ensure_ascii=False)[:3000]}\n```",
-                            parse_mode="Markdown"
-                        )
+                    # Извлекаем контент (URL или base64)
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content")
+                    if not content:
+                        logging.error(f"Empty content in response: {data}")
+                        await message.answer("❌ Не удалось получить изображение. Попробуйте другой запрос.")
+                        return
                     
-                    # Пытаемся извлечь URL (все возможные места)
-                    image_url = None
-                    if data.get("choices"):
-                        msg = data["choices"][0].get("message", {})
-                        # Прямая ссылка в content
-                        if msg.get("content") and isinstance(msg["content"], str) and msg["content"].startswith("http"):
-                            image_url = msg["content"]
-                        # Новый формат с images
-                        elif msg.get("images") and len(msg["images"]) > 0:
-                            img_data = msg["images"][0]
-                            image_url = img_data.get("image_url", {}).get("url")
-                    # Если не нашли, проверяем data[0].url (редко)
-                    if not image_url and data.get("data") and len(data["data"]) > 0:
-                        image_url = data["data"][0].get("url")
+                    # Если content — это список, берём первый элемент
+                    if isinstance(content, list):
+                        content = content[0] if content else None
+                        if not content:
+                            await message.answer("❌ Не удалось получить изображение. Попробуйте другой запрос.")
+                            return
                     
-                    if image_url and image_url.startswith("http"):
+                    # Определяем тип: URL или base64
+                    if isinstance(content, str) and content.startswith("http"):
+                        # Отправляем по URL
                         await message.answer_photo(
-                            photo=image_url,
+                            photo=content,
                             caption=f"✨ *{prompt}*",
                             parse_mode="Markdown"
                         )
-                    else:
-                        # Если URL не найден, показываем админу причину
-                        if is_admin(message.from_user.id):
-                            await message.answer(
-                                f"❌ Не удалось найти URL в ответе.\n"
-                                f"Проверьте JSON выше."
+                    elif isinstance(content, str) and content.startswith("data:image"):
+                        # Извлекаем base64 (формат data:image/png;base64,<data>)
+                        import base64
+                        try:
+                            header, b64data = content.split(",", 1)
+                            image_data = base64.b64decode(b64data)
+                            from aiogram.types import BufferedInputFile
+                            await message.answer_photo(
+                                photo=BufferedInputFile(image_data, filename="image.png"),
+                                caption=f"✨ *{prompt}*",
+                                parse_mode="Markdown"
                             )
-                        else:
-                            await message.answer("❌ Не удалось получить ссылку на изображение. Попробуйте другой запрос.")
+                        except Exception as e:
+                            logging.error(f"Failed to decode base64 image: {e}")
+                            await message.answer("❌ Не удалось обработать изображение. Попробуйте другой запрос.")
+                    else:
+                        logging.error(f"Unexpected content type: {type(content)} - {content[:200]}")
+                        await message.answer("❌ Не удалось получить изображение в ожидаемом формате. Попробуйте другой запрос.")
                         
         except asyncio.TimeoutError:
             await message.answer("⏰ Превышено время ожидания. Попробуйте позже.")
