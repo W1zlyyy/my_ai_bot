@@ -28,6 +28,9 @@ OPENROUTER_MODEL = os.getenv("OPENROUTER_DEFAULT_MODEL", DEFAULT_OPENROUTER_MODE
 OPENROUTER_MAX_TOKENS = int(os.getenv("OPENROUTER_MAX_TOKENS", "512"))
 TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL", "").strip()
 
+# Модель для генерации изображений (можно переопределить в .env)
+IMAGE_MODEL = os.getenv("IMAGE_MODEL", "flux/flux.1").strip()
+
 ACK_TEXT = os.getenv("BOT_ACK_TEXT", "Запрос принят, обрабатываю…").strip() or "Запрос принят, обрабатываю…"
 BUSY_TEXT = os.getenv("BOT_BUSY_TEXT", "Подожди, сейчас обрабатываю твоё прошлое сообщение.").strip() or "Подожди, сейчас обрабатываю твоё прошлое сообщение."
 USER_ERROR_AI = os.getenv("BOT_USER_ERROR_TEXT", "Не удалось получить ответ. Попробуй позже.").strip() or "Не удалось получить ответ. Попробуй позже."
@@ -72,7 +75,6 @@ BOT_STARTED_AT = time.time()
 # ==================== АДМИНКА ====================
 
 def _parse_admin_ids() -> Set[int]:
-    """Парсит ADMIN_IDS из .env"""
     raw = os.getenv("ADMIN_IDS", "").strip()
     if not raw:
         return set()
@@ -86,13 +88,11 @@ def _parse_admin_ids() -> Set[int]:
 ADMIN_IDS = _parse_admin_ids()
 
 def is_admin(user_id: int | None) -> bool:
-    """Проверяет, является ли пользователь администратором"""
     if user_id is None or not ADMIN_IDS:
         return False
     return user_id in ADMIN_IDS
 
 def admin_only(func):
-    """Декоратор для команд, доступных только админам"""
     @wraps(func)
     async def wrapper(message: Message, *args, **kwargs):
         if not message.from_user:
@@ -111,9 +111,7 @@ def admin_only(func):
 # ==================== БАЗА ДАННЫХ ====================
 
 def init_db():
-    """Инициализация базы данных — создает таблицы если их нет"""
     with sqlite3.connect(DB_PATH) as conn:
-        # Таблица истории диалогов
         conn.execute("""
             CREATE TABLE IF NOT EXISTS history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,16 +121,12 @@ def init_db():
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
-        # Таблица статистики (ключ-значение)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS stats (
                 key TEXT PRIMARY KEY,
                 value INTEGER NOT NULL
             )
         """)
-        
-        # Таблица настроек пользователей (для режимов и языков)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS user_settings (
                 user_id INTEGER PRIMARY KEY,
@@ -141,20 +135,14 @@ def init_db():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
-        # Индексы для быстрого поиска
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_user_id ON history(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_history_timestamp ON history(timestamp)")
-        
-        # Инициализируем счетчики статистики, если их нет
         conn.execute("INSERT OR IGNORE INTO stats (key, value) VALUES ('users_count', 0)")
         conn.execute("INSERT OR IGNORE INTO stats (key, value) VALUES ('ai_requests', 0)")
-        
         conn.commit()
 
 @contextmanager
 def get_db():
-    """Контекстный менеджер для работы с БД"""
     conn = sqlite3.connect(DB_PATH)
     try:
         yield conn
@@ -166,7 +154,6 @@ def get_db():
         conn.close()
 
 def save_message(user_id: int, role: str, content: str):
-    """Сохранить сообщение в историю"""
     with get_db() as conn:
         conn.execute(
             "INSERT INTO history (user_id, role, content) VALUES (?, ?, ?)",
@@ -174,23 +161,19 @@ def save_message(user_id: int, role: str, content: str):
         )
 
 def get_history_from_db(user_id: int, limit: int = MAX_HISTORY_MESSAGES) -> List[Dict[str, str]]:
-    """Получить историю диалога пользователя из БД"""
     with get_db() as conn:
         cur = conn.execute(
             "SELECT role, content FROM history WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
             (user_id, limit)
         )
         rows = cur.fetchall()
-        # Возвращаем в хронологическом порядке (от старых к новым)
         return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
 def clear_history_in_db(user_id: int):
-    """Очистить историю диалога пользователя"""
     with get_db() as conn:
         conn.execute("DELETE FROM history WHERE user_id = ?", (user_id,))
 
 def get_stats_from_db() -> tuple[int, int]:
-    """Получить статистику из БД (количество пользователей, количество запросов)"""
     with get_db() as conn:
         cur = conn.execute("SELECT value FROM stats WHERE key = 'users_count'")
         users_count = cur.fetchone()[0]
@@ -199,30 +182,23 @@ def get_stats_from_db() -> tuple[int, int]:
     return users_count, requests_count
 
 def increment_users_count():
-    """Увеличить счетчик уникальных пользователей"""
     with get_db() as conn:
         conn.execute("UPDATE stats SET value = value + 1 WHERE key = 'users_count'")
 
 def increment_ai_requests():
-    """Увеличить счетчик запросов к AI"""
     with get_db() as conn:
         conn.execute("UPDATE stats SET value = value + 1 WHERE key = 'ai_requests'")
 
 def register_user(user_id: int) -> bool:
-    """Зарегистрировать нового пользователя. Возвращает True если пользователь новый"""
     with get_db() as conn:
-        # Проверяем, есть ли у пользователя сообщения в истории
         cur = conn.execute("SELECT COUNT(*) FROM history WHERE user_id = ?", (user_id,))
         count = cur.fetchone()[0]
-        
         if count == 0:
-            # Новый пользователь
             conn.execute("UPDATE stats SET value = value + 1 WHERE key = 'users_count'")
             return True
     return False
 
 def save_user_mode(user_id: int, mode: str):
-    """Сохранить режим пользователя в БД"""
     try:
         with get_db() as conn:
             conn.execute("""
@@ -233,7 +209,6 @@ def save_user_mode(user_id: int, mode: str):
         logging.error(f"Ошибка сохранения режима: {e}")
 
 def load_user_modes_from_db():
-    """Загрузить сохраненные режимы пользователей из БД"""
     try:
         with get_db() as conn:
             cur = conn.execute("SELECT user_id, mode FROM user_settings")
@@ -247,25 +222,17 @@ def load_user_modes_from_db():
 
 # ==================== КЭШ В ПАМЯТИ ====================
 
-# user_id -> deque of messages (кэш для быстрого доступа)
 chat_history: Dict[int, Deque[Dict[str, str]]] = defaultdict(lambda: deque(maxlen=MAX_HISTORY_MESSAGES))
-
-# Пользователи, у которых сейчас выполняется запрос к ИИ
 processing_user_ids: Set[int] = set()
-
-# Режим ответа для каждого пользователя
 user_mode: Dict[int, str] = defaultdict(lambda: DEFAULT_MODE)
 
 def load_all_histories_to_cache():
-    """Загрузить всю историю из БД в кэш при старте бота"""
     with get_db() as conn:
         cur = conn.execute("SELECT DISTINCT user_id FROM history")
         user_ids = [row[0] for row in cur.fetchall()]
-        
         for user_id in user_ids:
             history = get_history_from_db(user_id, MAX_HISTORY_MESSAGES)
             chat_history[user_id] = deque(history, maxlen=MAX_HISTORY_MESSAGES)
-    
     logging.info(f"Загружена история для {len(chat_history)} пользователей")
 
 # ==================== ФУНКЦИИ ДЛЯ РАБОТЫ С OPENROUTER ====================
@@ -279,17 +246,10 @@ def validate_env() -> None:
 async def ask_openrouter(
     session: aiohttp.ClientSession, user_id: int, user_text: str
 ) -> str:
-    # Сохраняем сообщение пользователя в БД
     save_message(user_id, "user", user_text)
-    
-    # Добавляем в кэш
     chat_history[user_id].append({"role": "user", "content": user_text})
-    
-    # Получаем режим пользователя
     mode = user_mode.get(user_id, DEFAULT_MODE)
     system_prompt = MODES[mode]["system"]
-    
-    # Формируем сообщения для API
     messages: List[Dict[str, str]] = [
         {
             "role": "system",
@@ -301,7 +261,6 @@ async def ask_openrouter(
         },
         *list(chat_history[user_id]),
     ]
-
     payload = {
         "model": OPENROUTER_MODEL,
         "messages": messages,
@@ -312,16 +271,12 @@ async def ask_openrouter(
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
     }
-
     endpoint = f"{OPENROUTER_BASE_URL.rstrip('/')}/chat/completions"
-    
     try:
         async with session.post(endpoint, json=payload, headers=headers, timeout=60) as resp:
             if resp.status != 200:
                 error_text = await resp.text()
                 logging.warning("LLM API error (status=%s): %s", resp.status, error_text)
-                
-                # Обработка специфических ошибок
                 if resp.status == 404:
                     return "❌ Модель временно недоступна. Попробуйте позже."
                 if resp.status == 429:
@@ -330,25 +285,16 @@ async def ask_openrouter(
                     return "💰 Закончились кредиты. Уведомите администратора."
                 if resp.status == 401:
                     return "🔑 Проблема с API-ключом. Уведомите администратора."
-                
                 raise RuntimeError(USER_ERROR_AI)
-            
             data = await resp.json()
-
         answer = (
             data.get("choices", [{}])[0]
             .get("message", {})
             .get("content", "Извини, не смог сгенерировать ответ.")
         )
-        
-        # Сохраняем ответ ассистента в БД
         save_message(user_id, "assistant", answer)
-        
-        # Добавляем в кэш
         chat_history[user_id].append({"role": "assistant", "content": answer})
-        
         return answer
-        
     except asyncio.TimeoutError:
         logging.error("OpenRouter request timeout")
         return "⏰ Превышено время ожидания ответа. Попробуйте позже."
@@ -359,7 +305,6 @@ async def ask_openrouter(
 # ==================== КОМАНДЫ БОТА ====================
 
 async def main() -> None:
-    # Инициализация
     validate_env()
     init_db()
     load_all_histories_to_cache()
@@ -370,7 +315,6 @@ async def main() -> None:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # Настройка прокси
     tg_session = AiohttpSession(proxy=TELEGRAM_PROXY_URL or None)
     bot = Bot(token=BOT_TOKEN, session=tg_session)
     dp = Dispatcher()
@@ -399,10 +343,8 @@ async def main() -> None:
     async def cmd_help(message: Message) -> None:
         if message.from_user:
             register_user(message.from_user.id)
-        
         current_mode = user_mode.get(message.from_user.id, DEFAULT_MODE)
         current_mode_name = MODES[current_mode]["name"]
-        
         help_text = (
             "<b>🤖 Помощь — PrimeAi</b>\n\n"
             "<b>💬 Чат с ИИ</b>\n"
@@ -417,7 +359,6 @@ async def main() -> None:
             "/whoami — твой Telegram ID\n\n"
             f"🎨 *Текущий режим:* {current_mode_name}\n\n"
         )
-        
         if is_admin(message.from_user.id if message.from_user else None):
             help_text += (
                 "<b>👑 Админ-команды</b>\n"
@@ -425,7 +366,6 @@ async def main() -> None:
                 "/admin_clear &lt;user_id&gt; — очистить историю пользователя\n"
                 "/admin — информация об админ-панели\n"
             )
-        
         await message.answer(help_text, parse_mode="HTML")
 
     @dp.message(Command("whoami"))
@@ -434,7 +374,6 @@ async def main() -> None:
         is_admin_user = is_admin(uid)
         current_mode = user_mode.get(uid, DEFAULT_MODE)
         current_mode_name = MODES[current_mode]["name"]
-        
         await message.answer(
             f"🆔 Ваш Telegram ID: `{uid}`\n\n"
             f"👑 Администратор: {'✅ Да' if is_admin_user else '❌ Нет'}\n"
@@ -453,9 +392,7 @@ async def main() -> None:
 
     @dp.message(Command("mode"))
     async def cmd_mode(message: Message, command: CommandObject) -> None:
-        """Выбрать стиль ответов"""
         args = (command.args or "").strip().lower()
-        
         if not args:
             mode_list = "\n".join([
                 f"• `{code}` — {info['emoji']} {info['name']}" 
@@ -463,7 +400,6 @@ async def main() -> None:
             ])
             current_mode = user_mode.get(message.from_user.id, DEFAULT_MODE)
             current_name = MODES[current_mode]["name"]
-            
             await message.answer(
                 f"🎨 *Режимы ответа*\n\n"
                 f"{mode_list}\n\n"
@@ -474,7 +410,6 @@ async def main() -> None:
                 parse_mode="Markdown"
             )
             return
-        
         if args not in MODES:
             available = ", ".join(MODES.keys())
             await message.answer(
@@ -484,10 +419,8 @@ async def main() -> None:
                 parse_mode="Markdown"
             )
             return
-        
         user_mode[message.from_user.id] = args
         save_user_mode(message.from_user.id, args)
-        
         mode_info = MODES[args]
         await message.answer(
             f"✅ *Режим изменен на {mode_info['emoji']} {mode_info['name']}*\n\n"
@@ -495,6 +428,8 @@ async def main() -> None:
             f"💡 Теперь я буду отвечать в этом стиле!",
             parse_mode="Markdown"
         )
+
+    # ==================== КОМАНДА ГЕНЕРАЦИИ ИЗОБРАЖЕНИЙ (УЛУЧШЕННАЯ) ====================
 
     @dp.message(Command("image"))
     async def cmd_image(message: Message, command: CommandObject) -> None:
@@ -506,7 +441,7 @@ async def main() -> None:
                 "🎨 *Генерация изображений*\n\n"
                 "Использование: `/image <описание>`\n"
                 "Пример: `/image кот в космосе в скафандре`\n\n"
-                "💡 Модель: Premium (высокое качество, 10⭐️ за 5 картинок)",
+                f"💡 Модель: FLUX.1 (высокое качество, ~$0.003 за картинку)",
                 parse_mode="Markdown"
             )
             return
@@ -523,7 +458,7 @@ async def main() -> None:
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": "flux/flux.1",
+                        "model": IMAGE_MODEL,  # используем переменную из конфига
                         "messages": [{"role": "user", "content": prompt}],
                         "modalities": ["image"],
                         "image_config": {
@@ -533,32 +468,40 @@ async def main() -> None:
                     },
                     timeout=60
                 ) as resp:
-                    if resp.status != 200:
-                        error_text = await resp.text()
-                        logging.error(f"Image generation error: {resp.status} - {error_text}")
-                        
-                        if resp.status == 429:
-                            await message.answer("⚠️ Слишком много запросов. Подождите немного.")
-                        elif resp.status == 402:
-                            await message.answer("💰 Недостаточно средств на балансе OpenRouter.")
-                        else:
-                            await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
+                    response_text = await resp.text()
+                    if resp.status == 200:
+                        data = await resp.json()
+                        image_url = data["choices"][0]["message"]["content"]
+                        await message.answer_photo(
+                            photo=image_url,
+                            caption=f"✨ *{prompt}*",
+                            parse_mode="Markdown"
+                        )
                         return
                     
-                    data = await resp.json()
-                    image_url = data["choices"][0]["message"]["content"]
-                    
-                    await message.answer_photo(
-                        photo=image_url,
-                        caption=f"✨ *{prompt}*",
-                        parse_mode="Markdown"
-                    )
-                    
+                    logging.error(f"Image generation error: {resp.status} - {response_text}")
+                    if resp.status == 429:
+                        await message.answer("⚠️ Слишком много запросов. Подождите немного.")
+                    elif resp.status == 402:
+                        await message.answer("💰 Недостаточно средств на балансе OpenRouter. Пополните баланс.")
+                    elif resp.status == 404:
+                        await message.answer("❌ Модель временно недоступна. Попробуйте позже или сообщите администратору.")
+                    elif resp.status == 401:
+                        await message.answer("🔑 Ошибка авторизации. Проверьте API-ключ.")
+                    else:
+                        if is_admin(message.from_user.id):
+                            await message.answer(
+                                f"❌ Ошибка {resp.status}:\n```\n{response_text[:500]}\n```\n"
+                                "Проверьте баланс и идентификатор модели.",
+                                parse_mode="Markdown"
+                            )
+                        else:
+                            await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
         except asyncio.TimeoutError:
             await message.answer("⏰ Превышено время ожидания. Попробуйте позже.")
         except Exception as e:
             logging.exception("Image generation unexpected error")
-            await message.answer("❌ Произошла ошибка. Попробуйте позже.")
+            await message.answer("❌ Произошла внутренняя ошибка. Попробуйте позже.")
     
     # ==================== АДМИН-КОМАНДЫ ====================
     
@@ -569,18 +512,14 @@ async def main() -> None:
         uptime_sec = int(time.time() - BOT_STARTED_AT)
         h, rem = divmod(uptime_sec, 3600)
         m, s = divmod(rem, 60)
-        
         active_users = len(processing_user_ids)
-        
         mode_stats = defaultdict(int)
         for uid, mode in user_mode.items():
             mode_stats[mode] += 1
-        
         mode_stats_text = "\n".join([
             f"   {MODES[mode]['emoji']} {mode}: {count} пользователей"
             for mode, count in sorted(mode_stats.items(), key=lambda x: -x[1])
         ]) or "   нет данных"
-        
         await message.answer(
             f"📊 *Статистика PrimeAi* (админ-панель)\n\n"
             f"👥 *Всего пользователей:* {users_count}\n"
@@ -605,9 +544,7 @@ async def main() -> None:
                 "Пример: ADMIN_IDS=123456789"
             )
             return
-        
         users_count, requests_count = get_stats_from_db()
-        
         await message.answer(
             "👑 *Админ-панель PrimeAi*\n\n"
             "Доступные команды:\n"
@@ -631,18 +568,14 @@ async def main() -> None:
         if not args.isdigit():
             await message.answer("❌ user_id должен быть числом.")
             return
-        
         uid = int(args)
-        
         history = get_history_from_db(uid, 1)
         if not history:
             await message.answer(f"⚠️ Пользователь с ID `{uid}` не найден в базе данных.", parse_mode="Markdown")
             return
-        
         if uid in chat_history:
             chat_history[uid].clear()
         clear_history_in_db(uid)
-        
         await message.answer(
             f"✅ История диалога для пользователя `{uid}` очищена.",
             parse_mode="Markdown"
@@ -655,16 +588,13 @@ async def main() -> None:
         user = message.from_user
         if user is None or message.text is None:
             return
-
         if user.id in processing_user_ids:
             await message.answer(BUSY_TEXT)
             return
-
         processing_user_ids.add(user.id)
         try:
             register_user(user.id)
             increment_ai_requests()
-            
             ack_msg = await message.answer(ACK_TEXT)
             try:
                 await bot.send_chat_action(
@@ -672,13 +602,11 @@ async def main() -> None:
                     action=ChatAction.TYPING,
                 )
                 reply = await ask_openrouter(session, user.id, message.text)
-                
                 if len(reply) > 4000:
                     for i in range(0, len(reply), 4000):
                         await message.answer(reply[i:i+4000])
                 else:
                     await message.answer(reply)
-                    
             except Exception as e:
                 logging.exception("Failed to handle message")
                 await message.answer(USER_ERROR_AI)
@@ -705,13 +633,11 @@ async def main() -> None:
         except Exception as exc:
             logging.warning("Telegram connection attempt %s/3 failed: %s", attempt, exc)
             await asyncio.sleep(2 * attempt)
-
     if not connected:
         raise RuntimeError(
             "Cannot connect to Telegram API. "
             "Check internet, bot token, firewall, or set TELEGRAM_PROXY_URL in .env."
         )
-
     logging.info(f"✅ Бот PrimeAi запущен! Модель: {OPENROUTER_MODEL}")
     logging.info(f"👑 Администраторы: {', '.join(str(uid) for uid in ADMIN_IDS) if ADMIN_IDS else 'не заданы'}")
     
