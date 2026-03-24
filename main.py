@@ -441,8 +441,8 @@ async def main() -> None:
                 "🎨 *Генерация изображений*\n\n"
                 "Использование: `/image <описание>`\n"
                 "Пример: `/image кот в космосе в скафандре`\n\n"
-                f"💡 Модель: FLUX.2 pro (высокое качество, ~$0.03 за картинку)\n"
-                f"🔧 Для смены модели укажите IMAGE_MODEL в .env",
+                f"💡 Текущая модель: {IMAGE_MODEL}\n"
+                "🔧 Для смены модели укажите IMAGE_MODEL в .env",
                 parse_mode="Markdown"
             )
             return
@@ -491,37 +491,48 @@ async def main() -> None:
                                 await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
                         return
                     
+                    # Успешный ответ – разбираем JSON
                     data = await resp.json()
-                    # Получаем content – может быть строка с URL или список
-                    content = data.get("choices", [{}])[0].get("message", {}).get("content")
-                    if not content:
-                        logging.error(f"Empty content in response: {data}")
-                        await message.answer("❌ Не удалось получить ссылку на изображение. Попробуйте другой запрос.")
-                        return
+                    logging.info(f"OpenRouter image response: {data}")
                     
-                    # Если content — это список, берём первый элемент (обычно URL)
-                    if isinstance(content, list):
-                        image_url = content[0] if content else None
+                    # Извлекаем URL изображения (поддерживаем разные форматы)
+                    image_url = None
+                    if data.get("choices"):
+                        msg = data["choices"][0].get("message", {})
+                        # Старый формат: прямая ссылка в content
+                        if msg.get("content") and isinstance(msg["content"], str) and msg["content"].startswith("http"):
+                            image_url = msg["content"]
+                        # Новый формат: images[0].image_url.url
+                        elif msg.get("images") and len(msg["images"]) > 0:
+                            img_data = msg["images"][0]
+                            image_url = img_data.get("image_url", {}).get("url")
+                    # Редкий случай: data.data[0].url
+                    if not image_url and data.get("data") and len(data["data"]) > 0:
+                        image_url = data["data"][0].get("url")
+                    
+                    if image_url and image_url.startswith("http"):
+                        await message.answer_photo(
+                            photo=image_url,
+                            caption=f"✨ *{prompt}*",
+                            parse_mode="Markdown"
+                        )
+                        return
                     else:
-                        image_url = content
-                    
-                    if not image_url or not isinstance(image_url, str) or not image_url.startswith(("http://", "https://")):
-                        logging.error(f"Invalid image URL: {image_url}")
-                        await message.answer("❌ Получен некорректный URL изображения. Попробуйте другой запрос.")
-                        return
-                    
-                    await message.answer_photo(
-                        photo=image_url,
-                        caption=f"✨ *{prompt}*",
-                        parse_mode="Markdown"
-                    )
-                    
+                        logging.error(f"No valid image URL in response: {data}")
+                        if is_admin(message.from_user.id):
+                            await message.answer(
+                                f"❌ Не удалось получить ссылку на изображение.\n"
+                                f"Ответ OpenRouter: `{data}`",
+                                parse_mode="Markdown"
+                            )
+                        else:
+                            await message.answer("❌ Не удалось получить ссылку на изображение. Попробуйте другой запрос.")
+                        
         except asyncio.TimeoutError:
             await message.answer("⏰ Превышено время ожидания. Попробуйте позже.")
         except Exception as e:
             logging.exception("Image generation unexpected error")
-            await message.answer("❌ Произошла внутренняя ошибка. Попробуйте позже.")
-    
+            await message.answer("❌ Произошла внутренняя ошибка. Попробуйте позже.")    
     
     # ==================== АДМИН-КОМАНДЫ ====================
     
