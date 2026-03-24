@@ -431,9 +431,10 @@ async def main() -> None:
         )
 
     # ==================== КОМАНДА ГЕНЕРАЦИИ ИЗОБРАЖЕНИЙ ====================
+   
     @dp.message(Command("image"))
     async def cmd_image(message: Message, command: CommandObject) -> None:
-        """Генерация изображения по описанию"""
+        """Генерация изображения по описанию (отладочная версия)"""
         prompt = (command.args or "").strip()
         
         if not prompt:
@@ -471,42 +472,38 @@ async def main() -> None:
                 ) as resp:
                     response_text = await resp.text()
                     if resp.status != 200:
-                        logging.error(f"Image generation error: {resp.status} - {response_text}")
-                        if resp.status == 429:
-                            await message.answer("⚠️ Слишком много запросов. Подождите немного.")
-                        elif resp.status == 402:
-                            await message.answer("💰 Недостаточно средств на балансе OpenRouter. Пополните баланс.")
-                        elif resp.status == 404:
-                            await message.answer("❌ Модель временно недоступна. Попробуйте позже или сообщите администратору.")
-                        elif resp.status == 401:
-                            await message.answer("🔑 Ошибка авторизации. Проверьте API-ключ.")
+                        # Если ошибка, показываем её админу
+                        if is_admin(message.from_user.id):
+                            await message.answer(
+                                f"❌ Ошибка {resp.status}:\n```\n{response_text[:500]}\n```",
+                                parse_mode="Markdown"
+                            )
                         else:
-                            if is_admin(message.from_user.id):
-                                await message.answer(
-                                    f"❌ Ошибка {resp.status}:\n```\n{response_text[:500]}\n```\n"
-                                    "Проверьте баланс и идентификатор модели.",
-                                    parse_mode="Markdown"
-                                )
-                            else:
-                                await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
+                            await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
                         return
                     
                     # Успешный ответ – разбираем JSON
                     data = await resp.json()
-                    logging.info(f"OpenRouter image response: {data}")
+                    # Отправляем админу полный JSON (для отладки)
+                    if is_admin(message.from_user.id):
+                        import json
+                        await message.answer(
+                            f"📦 *Ответ OpenRouter (JSON):*\n```json\n{json.dumps(data, indent=2, ensure_ascii=False)[:3000]}\n```",
+                            parse_mode="Markdown"
+                        )
                     
-                    # Извлекаем URL изображения (поддерживаем разные форматы)
+                    # Пытаемся извлечь URL (все возможные места)
                     image_url = None
                     if data.get("choices"):
                         msg = data["choices"][0].get("message", {})
-                        # Старый формат: прямая ссылка в content
+                        # Прямая ссылка в content
                         if msg.get("content") and isinstance(msg["content"], str) and msg["content"].startswith("http"):
                             image_url = msg["content"]
-                        # Новый формат: images[0].image_url.url
+                        # Новый формат с images
                         elif msg.get("images") and len(msg["images"]) > 0:
                             img_data = msg["images"][0]
                             image_url = img_data.get("image_url", {}).get("url")
-                    # Редкий случай: data.data[0].url
+                    # Если не нашли, проверяем data[0].url (редко)
                     if not image_url and data.get("data") and len(data["data"]) > 0:
                         image_url = data["data"][0].get("url")
                     
@@ -516,14 +513,12 @@ async def main() -> None:
                             caption=f"✨ *{prompt}*",
                             parse_mode="Markdown"
                         )
-                        return
                     else:
-                        logging.error(f"No valid image URL in response: {data}")
+                        # Если URL не найден, показываем админу причину
                         if is_admin(message.from_user.id):
                             await message.answer(
-                                f"❌ Не удалось получить ссылку на изображение.\n"
-                                f"Ответ OpenRouter: `{data}`",
-                                parse_mode="Markdown"
+                                f"❌ Не удалось найти URL в ответе.\n"
+                                f"Проверьте JSON выше."
                             )
                         else:
                             await message.answer("❌ Не удалось получить ссылку на изображение. Попробуйте другой запрос.")
@@ -532,7 +527,7 @@ async def main() -> None:
             await message.answer("⏰ Превышено время ожидания. Попробуйте позже.")
         except Exception as e:
             logging.exception("Image generation unexpected error")
-            await message.answer("❌ Произошла внутренняя ошибка. Попробуйте позже.")    
+            await message.answer("❌ Произошла внутренняя ошибка. Попробуйте позже.")
     
     # ==================== АДМИН-КОМАНДЫ ====================
     
