@@ -355,22 +355,15 @@ async def ask_openrouter(
     except aiohttp.ClientError as e:
         logging.error(f"Network error: {e}")
         return "🌐 Не удалось подключиться к AI. Проверьте интернет."
-        
-    except asyncio.TimeoutError:
-        logging.error("OpenRouter request timeout")
-        return "⏰ Превышено время ожидания ответа. Попробуйте позже."
-    except aiohttp.ClientError as e:
-        logging.error(f"Network error: {e}")
-        return "🌐 Не удалось подключиться к AI. Проверьте интернет."
 
 # ==================== КОМАНДЫ БОТА ====================
 
 async def main() -> None:
     # Инициализация
     validate_env()
-    init_db()  # Создаем таблицы
-    load_all_histories_to_cache()  # Загружаем историю из БД в кэш
-    load_user_modes_from_db()  # Загружаем режимы пользователей
+    init_db()
+    load_all_histories_to_cache()
+    load_user_modes_from_db()
     
     logging.basicConfig(
         level=logging.INFO,
@@ -396,6 +389,7 @@ async def main() -> None:
             "📌 *Команды:*\n"
             "/clear — очистить историю\n"
             "/mode — выбрать стиль ответов\n"
+            "/image — сгенерировать изображение\n"
             "/help — подробная справка\n"
             "/whoami — твой Telegram ID",
             parse_mode="Markdown"
@@ -419,11 +413,11 @@ async def main() -> None:
             "/help — эта справка\n"
             "/clear — очистить историю диалога\n"
             "/mode — выбрать стиль ответов\n"
+            "/image — сгенерировать изображение по описанию\n"
             "/whoami — твой Telegram ID\n\n"
             f"🎨 *Текущий режим:* {current_mode_name}\n\n"
         )
         
-        # Если пользователь админ — добавляем админ-команды в справку
         if is_admin(message.from_user.id if message.from_user else None):
             help_text += (
                 "<b>👑 Админ-команды</b>\n"
@@ -491,7 +485,6 @@ async def main() -> None:
             )
             return
         
-        # Сохраняем режим
         user_mode[message.from_user.id] = args
         save_user_mode(message.from_user.id, args)
         
@@ -566,13 +559,12 @@ async def main() -> None:
         except Exception as e:
             logging.exception("Image generation unexpected error")
             await message.answer("❌ Произошла ошибка. Попробуйте позже.")
-            
+    
     # ==================== АДМИН-КОМАНДЫ ====================
     
     @dp.message(Command("stats"))
     @admin_only
     async def cmd_stats(message: Message) -> None:
-        """Команда /stats — доступна только админам"""
         users_count, requests_count = get_stats_from_db()
         uptime_sec = int(time.time() - BOT_STARTED_AT)
         h, rem = divmod(uptime_sec, 3600)
@@ -580,7 +572,6 @@ async def main() -> None:
         
         active_users = len(processing_user_ids)
         
-        # Статистика по режимам
         mode_stats = defaultdict(int)
         for uid, mode in user_mode.items():
             mode_stats[mode] += 1
@@ -607,7 +598,6 @@ async def main() -> None:
     @dp.message(Command("admin"))
     @admin_only
     async def cmd_admin(message: Message) -> None:
-        """Информация об админ-панели"""
         if not ADMIN_IDS:
             await message.answer(
                 "🔧 Админка не настроена.\n"
@@ -634,7 +624,6 @@ async def main() -> None:
     @dp.message(Command("admin_clear"))
     @admin_only
     async def cmd_admin_clear(message: Message, command: CommandObject) -> None:
-        """Очистка истории пользователя — только для админов"""
         args = (command.args or "").strip()
         if not args:
             await message.answer("📝 Использование: `/admin_clear <user_id>`", parse_mode="Markdown")
@@ -645,13 +634,11 @@ async def main() -> None:
         
         uid = int(args)
         
-        # Проверяем, есть ли у пользователя история
         history = get_history_from_db(uid, 1)
         if not history:
             await message.answer(f"⚠️ Пользователь с ID `{uid}` не найден в базе данных.", parse_mode="Markdown")
             return
         
-        # Очищаем историю
         if uid in chat_history:
             chat_history[uid].clear()
         clear_history_in_db(uid)
@@ -686,7 +673,6 @@ async def main() -> None:
                 )
                 reply = await ask_openrouter(session, user.id, message.text)
                 
-                # Разбиваем длинный ответ на части
                 if len(reply) > 4000:
                     for i in range(0, len(reply), 4000):
                         await message.answer(reply[i:i+4000])
