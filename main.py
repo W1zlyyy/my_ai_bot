@@ -30,7 +30,7 @@ TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL", "").strip()
 
 # Модель для генерации изображений (можно переопределить в .env)
 # Действительные модели: black-forest-labs/flux-1.1-pro, dall-e-3, stabilityai/stable-diffusion-3.5-large, ideogram/ideogram-v2
-IMAGE_MODEL = os.getenv("IMAGE_MODEL", "black-forest-labs/flux-1.1-pro").strip()
+IMAGE_MODEL = os.getenv("IMAGE_MODEL", "black-forest-labs/flux.2-klein-4b").strip()
 
 ACK_TEXT = os.getenv("BOT_ACK_TEXT", "Запрос принят, обрабатываю…").strip() or "Запрос принят, обрабатываю…"
 BUSY_TEXT = os.getenv("BOT_BUSY_TEXT", "Подожди, сейчас обрабатываю твоё прошлое сообщение.").strip() or "Подожди, сейчас обрабатываю твоё прошлое сообщение."
