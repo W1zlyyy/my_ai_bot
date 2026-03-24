@@ -431,7 +431,6 @@ async def main() -> None:
         )
 
     # ==================== КОМАНДА ГЕНЕРАЦИИ ИЗОБРАЖЕНИЙ ====================
-
     @dp.message(Command("image"))
     async def cmd_image(message: Message, command: CommandObject) -> None:
         """Генерация изображения по описанию"""
@@ -442,7 +441,7 @@ async def main() -> None:
                 "🎨 *Генерация изображений*\n\n"
                 "Использование: `/image <описание>`\n"
                 "Пример: `/image кот в космосе в скафандре`\n\n"
-                f"💡 Модель: FLUX 1.1 Pro (высокое качество, ~$0.003 за картинку)\n"
+                f"💡 Модель: FLUX.2 pro (высокое качество, ~$0.03 за картинку)\n"
                 f"🔧 Для смены модели укажите IMAGE_MODEL в .env",
                 parse_mode="Markdown"
             )
@@ -471,39 +470,58 @@ async def main() -> None:
                     timeout=60
                 ) as resp:
                     response_text = await resp.text()
-                    if resp.status == 200:
-                        data = await resp.json()
-                        image_url = data["choices"][0]["message"]["content"]
-                        await message.answer_photo(
-                            photo=image_url,
-                            caption=f"✨ *{prompt}*",
-                            parse_mode="Markdown"
-                        )
+                    if resp.status != 200:
+                        logging.error(f"Image generation error: {resp.status} - {response_text}")
+                        if resp.status == 429:
+                            await message.answer("⚠️ Слишком много запросов. Подождите немного.")
+                        elif resp.status == 402:
+                            await message.answer("💰 Недостаточно средств на балансе OpenRouter. Пополните баланс.")
+                        elif resp.status == 404:
+                            await message.answer("❌ Модель временно недоступна. Попробуйте позже или сообщите администратору.")
+                        elif resp.status == 401:
+                            await message.answer("🔑 Ошибка авторизации. Проверьте API-ключ.")
+                        else:
+                            if is_admin(message.from_user.id):
+                                await message.answer(
+                                    f"❌ Ошибка {resp.status}:\n```\n{response_text[:500]}\n```\n"
+                                    "Проверьте баланс и идентификатор модели.",
+                                    parse_mode="Markdown"
+                                )
+                            else:
+                                await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
                         return
                     
-                    logging.error(f"Image generation error: {resp.status} - {response_text}")
-                    if resp.status == 429:
-                        await message.answer("⚠️ Слишком много запросов. Подождите немного.")
-                    elif resp.status == 402:
-                        await message.answer("💰 Недостаточно средств на балансе OpenRouter. Пополните баланс.")
-                    elif resp.status == 404:
-                        await message.answer("❌ Модель временно недоступна. Попробуйте позже или сообщите администратору.")
-                    elif resp.status == 401:
-                        await message.answer("🔑 Ошибка авторизации. Проверьте API-ключ.")
+                    data = await resp.json()
+                    # Получаем content – может быть строка с URL или список
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content")
+                    if not content:
+                        logging.error(f"Empty content in response: {data}")
+                        await message.answer("❌ Не удалось получить ссылку на изображение. Попробуйте другой запрос.")
+                        return
+                    
+                    # Если content — это список, берём первый элемент (обычно URL)
+                    if isinstance(content, list):
+                        image_url = content[0] if content else None
                     else:
-                        if is_admin(message.from_user.id):
-                            await message.answer(
-                                f"❌ Ошибка {resp.status}:\n```\n{response_text[:500]}\n```\n"
-                                "Проверьте баланс и идентификатор модели.",
-                                parse_mode="Markdown"
-                            )
-                        else:
-                            await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
+                        image_url = content
+                    
+                    if not image_url or not isinstance(image_url, str) or not image_url.startswith(("http://", "https://")):
+                        logging.error(f"Invalid image URL: {image_url}")
+                        await message.answer("❌ Получен некорректный URL изображения. Попробуйте другой запрос.")
+                        return
+                    
+                    await message.answer_photo(
+                        photo=image_url,
+                        caption=f"✨ *{prompt}*",
+                        parse_mode="Markdown"
+                    )
+                    
         except asyncio.TimeoutError:
             await message.answer("⏰ Превышено время ожидания. Попробуйте позже.")
         except Exception as e:
             logging.exception("Image generation unexpected error")
             await message.answer("❌ Произошла внутренняя ошибка. Попробуйте позже.")
+    
     
     # ==================== АДМИН-КОМАНДЫ ====================
     
