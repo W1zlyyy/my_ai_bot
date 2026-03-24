@@ -502,7 +502,8 @@ async def main() -> None:
             f"💡 Теперь я буду отвечать в этом стиле!",
             parse_mode="Markdown"
         )
-    @dp.message(Command("image"))
+
+        @dp.message(Command("image"))
     async def cmd_image(message: Message, command: CommandObject) -> None:
         """Генерация изображения по описанию"""
         prompt = (command.args or "").strip()
@@ -512,7 +513,7 @@ async def main() -> None:
                 "🎨 *Генерация изображений*\n\n"
                 "Использование: `/image <описание>`\n"
                 "Пример: `/image кот в космосе в скафандре`\n\n"
-                "💡 Модель: PrimeAi (высокое качество, 10⭐ за картинку)",
+                "💡 Модель: FLUX.1 (высокое качество, ~$0.003 за картинку)",
                 parse_mode="Markdown"
             )
             return
@@ -529,7 +530,7 @@ async def main() -> None:
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": "flux/flux.1",   # можно заменить на "dall-e-3", "stabilityai/stable-diffusion-3.5-large"
+                        "model": "flux/flux.1",
                         "messages": [{"role": "user", "content": prompt}],
                         "modalities": ["image"],
                         "image_config": {
@@ -546,7 +547,7 @@ async def main() -> None:
                         if resp.status == 429:
                             await message.answer("⚠️ Слишком много запросов. Подождите немного.")
                         elif resp.status == 402:
-                            await message.answer("💰 Недостаточно средств на балансе")
+                            await message.answer("💰 Недостаточно средств на балансе OpenRouter.")
                         else:
                             await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
                         return
