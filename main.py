@@ -29,7 +29,8 @@ OPENROUTER_MAX_TOKENS = int(os.getenv("OPENROUTER_MAX_TOKENS", "512"))
 TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL", "").strip()
 
 # Модель для генерации изображений (можно переопределить в .env)
-IMAGE_MODEL = os.getenv("IMAGE_MODEL", "flux/flux.1").strip()
+# Действительные модели: black-forest-labs/flux-1.1-pro, dall-e-3, stabilityai/stable-diffusion-3.5-large, ideogram/ideogram-v2
+IMAGE_MODEL = os.getenv("IMAGE_MODEL", "black-forest-labs/flux-1.1-pro").strip()
 
 ACK_TEXT = os.getenv("BOT_ACK_TEXT", "Запрос принят, обрабатываю…").strip() or "Запрос принят, обрабатываю…"
 BUSY_TEXT = os.getenv("BOT_BUSY_TEXT", "Подожди, сейчас обрабатываю твоё прошлое сообщение.").strip() or "Подожди, сейчас обрабатываю твоё прошлое сообщение."
@@ -429,7 +430,7 @@ async def main() -> None:
             parse_mode="Markdown"
         )
 
-    # ==================== КОМАНДА ГЕНЕРАЦИИ ИЗОБРАЖЕНИЙ (УЛУЧШЕННАЯ) ====================
+    # ==================== КОМАНДА ГЕНЕРАЦИИ ИЗОБРАЖЕНИЙ ====================
 
     @dp.message(Command("image"))
     async def cmd_image(message: Message, command: CommandObject) -> None:
@@ -441,7 +442,8 @@ async def main() -> None:
                 "🎨 *Генерация изображений*\n\n"
                 "Использование: `/image <описание>`\n"
                 "Пример: `/image кот в космосе в скафандре`\n\n"
-                f"💡 Модель: FLUX.1 (высокое качество, ~$0.003 за картинку)",
+                f"💡 Модель: FLUX 1.1 Pro (высокое качество, ~$0.003 за картинку)\n"
+                f"🔧 Для смены модели укажите IMAGE_MODEL в .env",
                 parse_mode="Markdown"
             )
             return
@@ -458,7 +460,7 @@ async def main() -> None:
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": IMAGE_MODEL,  # используем переменную из конфига
+                        "model": IMAGE_MODEL,
                         "messages": [{"role": "user", "content": prompt}],
                         "modalities": ["image"],
                         "image_config": {
