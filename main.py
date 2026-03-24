@@ -503,7 +503,7 @@ async def main() -> None:
             parse_mode="Markdown"
         )
 
-        @dp.message(Command("image"))
+    @dp.message(Command("image"))
     async def cmd_image(message: Message, command: CommandObject) -> None:
         """Генерация изображения по описанию"""
         prompt = (command.args or "").strip()
